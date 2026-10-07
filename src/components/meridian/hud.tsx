@@ -81,30 +81,88 @@ export function Hud({
   const setArm = useMeridian((s) => s.setArm);
   const scrubHour = useMeridian((s) => s.scrubHour);
   const focus = useMeridian((s) => s.focus);
-  const [sheet, setSheet] = useState<"up" | "down">("up");
-  const wasPlaying = useRef(false);
-  const drag = useRef({ y: 0, moved: false });
+  const panelRef = useRef<HTMLElement>(null);
+  const dockRef = useRef<HTMLDivElement>(null);
+  const shiftRef = useRef(0);
+  const mobile = useRef(true);
+  const [shift, setShift] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const [parked, setParked] = useState(false);
 
   useEffect(() => {
-    if (playing && !wasPlaying.current) setSheet("down");
-    if (!playing && wasPlaying.current) setSheet("up");
-    wasPlaying.current = playing;
-  }, [playing]);
+    const query = window.matchMedia("(max-width: 767px)");
+    const apply = () => {
+      mobile.current = query.matches;
+      if (!query.matches) {
+        shiftRef.current = 0;
+        setShift(0);
+        setParked(false);
+      }
+    };
+    apply();
+    query.addEventListener("change", apply);
+    return () => query.removeEventListener("change", apply);
+  }, []);
 
-  function onPeekDown(event: React.PointerEvent<HTMLDivElement>) {
-    drag.current = { y: event.clientY, moved: false };
-    event.currentTarget.setPointerCapture(event.pointerId);
+  function travel(): number {
+    const panel = panelRef.current;
+    const dock = dockRef.current;
+    if (!panel || !dock) return 0;
+    const keep = dock.offsetTop + dock.offsetHeight + 8;
+    return Math.max(0, panel.offsetHeight - keep);
   }
 
-  function onPeekMove(event: React.PointerEvent<HTMLDivElement>) {
-    if (Math.abs(event.clientY - drag.current.y) > 8) drag.current.moved = true;
+  useEffect(() => {
+    if (!parked || dragging) return;
+    const max = travel();
+    if (max > 0 && Math.abs(max - shiftRef.current) > 1) {
+      shiftRef.current = max;
+      setShift(max);
+    }
+  }, [parked, dragging]);
+
+  function place(next: number, park: boolean) {
+    shiftRef.current = next;
+    setShift(next);
+    setParked(park);
   }
 
-  function onPeekUp(event: React.PointerEvent<HTMLDivElement>) {
-    const dy = event.clientY - drag.current.y;
-    if (dy > 28) setSheet("down");
-    else if (dy < -28) setSheet("up");
-    else if (!drag.current.moved) setSheet((current) => (current === "down" ? "up" : "down"));
+  function togglePlay(event: React.MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    const next = !useMeridian.getState().playing;
+    setPlaying(next);
+    if (!mobile.current) return;
+    place(next ? travel() : 0, next);
+  }
+
+  function onHandleDown(event: React.PointerEvent<HTMLButtonElement>) {
+    if (!mobile.current) return;
+    event.stopPropagation();
+    const pointerId = event.pointerId;
+    const startY = event.clientY;
+    const origin = shiftRef.current;
+    const max = travel();
+    setDragging(true);
+    const move = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      const next = Math.min(max, Math.max(0, origin + ev.clientY - startY));
+      shiftRef.current = next;
+      setShift(next);
+    };
+    const end = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      const dy = ev.clientY - startY;
+      const current = shiftRef.current;
+      const down = Math.abs(dy) < 10 ? origin < 20 : current > max * 0.5;
+      setDragging(false);
+      place(down ? max : 0, down);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
   }
 
   const maxEta = Math.max(...profile.map((p) => p.totalHours));
@@ -128,49 +186,54 @@ export function Hud({
           {nextRoad ? <p className="text-sm text-muted">and then {nextRoad}</p> : null}
         </div>
       ) : null}
-      <aside className={`panel ${sheet === "down" ? "is-down" : ""}`} aria-label="Corridor">
-      <div
-        className="sheet-peek"
-        onPointerDown={onPeekDown}
-        onPointerMove={onPeekMove}
-        onPointerUp={onPeekUp}
+      <aside
+        ref={panelRef}
+        className="panel"
+        aria-label="Corridor"
+        style={{
+          transform: shift ? `translate3d(0, ${shift}px, 0)` : undefined,
+          transition: dragging ? "none" : "transform 420ms cubic-bezier(0.22, 1, 0.36, 1)",
+        }}
       >
-        <span className="sheet-grab" aria-hidden />
-        <div className="sheet-summary">
-          <div>
-            <p className="font-mono text-lg leading-none text-fg tabular-nums">{formatClock(hour)}</p>
-            <p className="mt-1 text-xs text-muted">{formatMin(solution.totalHours)} · {STATE.clock}</p>
+      <div ref={dockRef} className="sheet-dock">
+        <button
+          type="button"
+          className="sheet-handle"
+          aria-label={parked ? "Show the menu" : "Hide the menu"}
+          onPointerDown={onHandleDown}
+        >
+          <span className="sheet-grab" aria-hidden />
+        </button>
+        <div className="flex items-center justify-between gap-3">
+          <div className="sheet-dock-copy">
+            {parked ? (
+              <>
+                <p className="font-mono text-2xl leading-none text-fg tabular-nums">{formatClock(hour)}</p>
+                <p className="mt-1 text-xs text-muted">
+                  {formatMin(solution.totalHours)} · {STATE.clock}
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="font-display text-xl leading-none tracking-tight text-fg">Meridian</p>
+                <p className="mt-1 text-sm text-muted">
+                  {STATE.country} · {STATE.name}
+                </p>
+              </>
+            )}
           </div>
           <button
             type="button"
-            className="grid h-11 w-11 shrink-0 place-items-center rounded-lg border border-border bg-subtle text-fg"
+            className="play-btn grid h-11 w-11 shrink-0 place-items-center rounded-lg border border-border bg-subtle text-fg"
             aria-label={playing ? "Pause the day" : "Play through the day"}
             onPointerDown={(event) => event.stopPropagation()}
-            onClick={(event) => {
-              event.stopPropagation();
-              setPlaying(!playing);
-            }}
+            onClick={togglePlay}
           >
             {playing ? <Pause size={18} strokeWidth={1.75} /> : <Play size={18} strokeWidth={1.75} />}
           </button>
         </div>
       </div>
-      <header className="flex items-start justify-between gap-3">
-        <div>
-          <p className="font-display text-xl leading-none tracking-tight text-fg">Meridian</p>
-          <p className="mt-1 text-sm text-muted">
-            {STATE.country} · {STATE.name}
-          </p>
-        </div>
-        <button
-          type="button"
-          className="grid h-11 w-11 shrink-0 place-items-center rounded-lg border border-border bg-subtle text-fg"
-          aria-label={playing ? "Pause the day" : "Play through the day"}
-          onClick={() => setPlaying(!playing)}
-        >
-          {playing ? <Pause size={18} strokeWidth={1.75} /> : <Play size={18} strokeWidth={1.75} />}
-        </button>
-      </header>
+      <div className="sheet-body">
 
       <p className="mt-3 text-xs text-faint">
         {arm === "origin" ? "Next tap sets the start." : "Next tap sets the end."} Drag still turns the globe.
@@ -335,6 +398,7 @@ export function Hud({
           );
         })}
       </ul>
+      </div>
     </aside>
     </>
   );
