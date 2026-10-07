@@ -8,9 +8,15 @@ import { edgeHours } from "@/lib/ppm/solution-engine";
 import type { RouteSolution } from "@/lib/ppm/solution-engine";
 import { useMeridian } from "@/lib/meridian-store";
 
-const CLEAR = new THREE.Color("#9aabbc");
-const HEAVY = new THREE.Color("#c4928c");
 const GLOBE = new THREE.Color("#07080a");
+const OK = new THREE.Color("#b7d7c8");
+const WARN = new THREE.Color("#e4d2b0");
+const BAD = new THREE.Color("#e4b4ae");
+const UP = new THREE.Vector3(0, 1, 0);
+const scratchColor = new THREE.Color();
+const scratchSph = new THREE.Spherical();
+const scratchOffset = new THREE.Vector3();
+const scratchTangent = new THREE.Vector3();
 
 function angDiff(a: number, b: number): number {
   let d = b - a;
@@ -19,8 +25,33 @@ function angDiff(a: number, b: number): number {
   return d;
 }
 
-function mixCongestion(amount: number): THREE.Color {
-  return CLEAR.clone().lerp(HEAVY, THREE.MathUtils.clamp(amount, 0, 1));
+function trafficColor(amount: number, out: THREE.Color): THREE.Color {
+  const t = THREE.MathUtils.clamp(amount, 0, 1);
+  if (t < 0.5) return out.copy(OK).lerp(WARN, t / 0.5);
+  return out.copy(WARN).lerp(BAD, (t - 0.5) / 0.5);
+}
+
+type Aim = { phi: number; theta: number; radius: number };
+
+function aimForPath(path: string[], target: THREE.Vector3): Aim | null {
+  if (path.length === 0) return null;
+  const dir = new THREE.Vector3();
+  const pts: THREE.Vector3[] = [];
+  for (const id of path) {
+    const city = cityAt(id);
+    const v = latLonToVec(city.lat, city.lon, 1);
+    const p = new THREE.Vector3(v[0], v[1], v[2]);
+    pts.push(p);
+    dir.add(p);
+  }
+  if (dir.lengthSq() < 1e-8) return null;
+  dir.normalize();
+  let maxAng = 0.045;
+  for (const p of pts) maxAng = Math.max(maxAng, dir.angleTo(p));
+  const distance = THREE.MathUtils.clamp(1.24 + maxAng * 3.5, 1.24, 2.6);
+  scratchOffset.copy(dir).multiplyScalar(distance).sub(target);
+  scratchSph.setFromVector3(scratchOffset);
+  return { phi: scratchSph.phi, theta: scratchSph.theta, radius: scratchSph.radius };
 }
 
 function ClockDriver() {
@@ -155,14 +186,14 @@ function TrafficField() {
       from: string;
       to: string;
     }>;
-    const scratch = new THREE.Color();
+    const scratchColor = new THREE.Color();
     for (const range of ranges) {
       const edge = CORRIDORS.find((e) => e.from === range.from && e.to === range.to);
       if (!edge) continue;
       const timed = edgeHours({ ...edge, fromId: edge.from, toId: edge.to }, hour);
-      scratch.copy(CLEAR).lerp(HEAVY, timed.congestion);
+      trafficColor(timed.congestion, scratchColor);
       for (let i = 0; i < range.count; i++) {
-        attr.setXYZ(range.start + i, scratch.r, scratch.g, scratch.b);
+        attr.setXYZ(range.start + i, scratchColor.r, scratchColor.g, scratchColor.b);
       }
     }
     attr.needsUpdate = true;
@@ -175,63 +206,200 @@ function TrafficField() {
   );
 }
 
-function RouteArc({ solution }: { solution: RouteSolution }) {
+type Ribbon = {
+  core: THREE.TubeGeometry;
+  casing: THREE.TubeGeometry;
+  pts: THREE.Vector3[];
+  owner: number[];
+  tubular: number;
+  radial: number;
+};
+
+function setRibbonDraw(geometry: THREE.BufferGeometry, t: number) {
+  const index = geometry.index;
+  if (!index) return;
+  const count = t >= 1 ? index.count : Math.max(0, Math.floor(index.count * t));
+  if (geometry.drawRange.start !== 0 || geometry.drawRange.count !== count) {
+    geometry.setDrawRange(0, count);
+  }
+}
+
+function traceCities(ids: string[], clearance: number): { pts: THREE.Vector3[]; owner: number[] } {
+  const pts: THREE.Vector3[] = [];
+  const owner: number[] = [];
+  for (let leg = 0; leg < ids.length - 1; leg++) {
+    const a = cityAt(ids[leg]);
+    const b = cityAt(ids[leg + 1]);
+    const seg = arcPoints(latLonToVec(a.lat, a.lon), latLonToVec(b.lat, b.lon), 16);
+    const start = leg === 0 ? 0 : 1;
+    for (let i = start; i < seg.length; i++) {
+      const p = seg[i];
+      const v = new THREE.Vector3(p[0], p[1], p[2]);
+      const len = v.length() || 1;
+      v.multiplyScalar((len + clearance) / len);
+      pts.push(v);
+      owner.push(leg);
+    }
+  }
+  return { pts, owner };
+}
+
+function makeRibbon(ids: string[], radius: number, clearance: number): Ribbon | null {
+  if (ids.length < 2) return null;
+  const traced = traceCities(ids, clearance);
+  if (traced.pts.length < 2) return null;
+  const tubular = Math.max(1, traced.pts.length - 1);
+  const radial = 5;
+  const curve = new THREE.CatmullRomCurve3(traced.pts, false, "catmullrom", 0.25);
+  const core = new THREE.TubeGeometry(curve, tubular, radius, radial, false);
+  const casing = new THREE.TubeGeometry(curve, tubular, radius * 1.4, radial, false);
+  core.setAttribute("color", new THREE.BufferAttribute(new Float32Array(core.attributes.position.count * 3), 3));
+  core.setDrawRange(0, 0);
+  casing.setDrawRange(0, 0);
+  return { core, casing, pts: traced.pts, owner: traced.owner, tubular, radial };
+}
+
+function paintRibbon(ribbon: Ribbon, legs: Array<{ congestion: number }>) {
+  const attr = ribbon.core.getAttribute("color") as THREE.BufferAttribute;
+  const stride = ribbon.radial + 1;
+  const last = Math.max(0, ribbon.owner.length - 1);
+  for (let i = 0; i <= ribbon.tubular; i++) {
+    const src = ribbon.owner[Math.min(last, Math.round((i / ribbon.tubular) * last))] ?? 0;
+    const amount = legs[Math.min(Math.max(legs.length - 1, 0), src)]?.congestion ?? 0;
+    trafficColor(amount, scratchColor);
+    for (let j = 0; j < stride; j++) {
+      attr.setXYZ(i * stride + j, scratchColor.r, scratchColor.g, scratchColor.b);
+    }
+  }
+  attr.needsUpdate = true;
+}
+
+function disposeRibbon(ribbon: Ribbon | null) {
+  ribbon?.core.dispose();
+  ribbon?.casing.dispose();
+}
+
+function ride(mesh: THREE.Object3D | null, pts: THREE.Vector3[], t: number, lift: number, pointForward: boolean) {
+  if (!mesh || pts.length < 2) return;
+  const f = THREE.MathUtils.clamp(t, 0, 0.999) * (pts.length - 1);
+  const i = Math.floor(f);
+  const next = Math.min(pts.length - 1, i + 1);
+  mesh.position.lerpVectors(pts[i], pts[next], f - i);
+  const len = mesh.position.length() || 1;
+  mesh.position.multiplyScalar((len + lift) / len);
+  if (!pointForward) return;
+  scratchTangent.copy(pts[next]).sub(pts[i]);
+  if (scratchTangent.lengthSq() < 1e-8) return;
+  mesh.quaternion.setFromUnitVectors(UP, scratchTangent.normalize());
+}
+
+function RouteLayer({ solution }: { solution: RouteSolution }) {
   const reduce = useRef(false);
+  const build = useRef(0);
+  const drive = useRef(0);
+  const puck = useRef<THREE.Mesh>(null);
+  const chevrons = useRef<Array<THREE.Mesh | null>>([]);
+  const [ribbon, setRibbon] = useState<Ribbon | null>(null);
+  const [alt, setAlt] = useState<Ribbon | null>(null);
+  const pathKey = solution.path.join(">");
+  const altKey = solution.systemPath.join(">");
+  const showAlt = altKey !== pathKey && solution.systemPath.length > 1;
+  const colorKey = solution.legs.map((leg) => leg.congestion.toFixed(2)).join(",");
+
   useEffect(() => {
     reduce.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  }, []);
-
-  const legs = useMemo(() => {
-    return solution.legs.map((leg) => {
-      const a = cityAt(leg.from);
-      const b = cityAt(leg.to);
-      const pts = arcPoints(latLonToVec(a.lat, a.lon), latLonToVec(b.lat, b.lon), 48).map(
-        (p) => new THREE.Vector3(p[0], p[1], p[2]),
-      );
-      const curve = new THREE.CatmullRomCurve3(pts);
-      const geometry = new THREE.TubeGeometry(curve, 48, 0.0045, 6, false);
-      return { geometry, color: mixCongestion(leg.congestion), pts };
-    });
-  }, [solution]);
+    const next = makeRibbon(solution.path, 0.016, 0.024);
+    const altNext = showAlt ? makeRibbon(solution.systemPath, 0.008, 0.006) : null;
+    if (next) paintRibbon(next, solution.legs);
+    build.current = reduce.current ? 1 : 0;
+    drive.current = 0;
+    if (reduce.current && next) {
+      setRibbonDraw(next.core, 1);
+      setRibbonDraw(next.casing, 1);
+      if (altNext) {
+        setRibbonDraw(altNext.core, 1);
+        setRibbonDraw(altNext.casing, 1);
+      }
+    }
+    setRibbon(next);
+    setAlt(altNext);
+    return () => {
+      disposeRibbon(next);
+      disposeRibbon(altNext);
+    };
+  }, [pathKey, altKey, showAlt]);
 
   useEffect(() => {
-    return () => {
-      for (const leg of legs) leg.geometry.dispose();
-    };
-  }, [legs]);
-
-  const all = useMemo(() => legs.flatMap((leg) => leg.pts), [legs]);
-  const pulse = useRef<THREE.Mesh>(null);
-  const phase = useRef(0);
+    if (ribbon) paintRibbon(ribbon, solution.legs);
+  }, [ribbon, colorKey, solution.legs]);
 
   useFrame((_, delta) => {
-    const mesh = pulse.current;
-    if (!mesh || all.length < 2) return;
-    if (reduce.current) {
-      mesh.position.copy(all[0]);
-      return;
+    const dt = Math.min(delta, 0.05);
+    const hops = Math.max(1, solution.path.length - 1);
+    const dur = Math.min(2.2, 0.62 + hops * 0.15);
+    if (reduce.current) build.current = 1;
+    else build.current = Math.min(1, build.current + dt / dur);
+    const t = build.current;
+    if (ribbon) {
+      setRibbonDraw(ribbon.core, t);
+      setRibbonDraw(ribbon.casing, t);
     }
-    const dt = Math.min(delta, 0.1);
-    phase.current = (phase.current + dt * 0.18) % 1;
-    const f = phase.current * (all.length - 1);
-    const i = Math.floor(f);
-    const k = f - i;
-    mesh.position.lerpVectors(all[i], all[Math.min(all.length - 1, i + 1)], k);
+    if (alt) {
+      setRibbonDraw(alt.core, t);
+      setRibbonDraw(alt.casing, t);
+    }
+    const pts = ribbon?.pts;
+    if (!pts) return;
+    const flowing = t >= 1 && !reduce.current;
+    if (flowing) drive.current = (drive.current + dt * 0.16) % 1;
+    if (puck.current) {
+      puck.current.visible = true;
+      ride(puck.current, pts, flowing ? drive.current : t, 0.01, false);
+    }
+    chevrons.current.forEach((mesh, index) => {
+      if (!mesh) return;
+      mesh.visible = flowing;
+      if (flowing) ride(mesh, pts, (drive.current + index * 0.2) % 1, 0.012, true);
+    });
   });
 
-  if (legs.length === 0) return null;
+  if (!ribbon) return null;
 
   return (
     <group>
-      {legs.map((leg, i) => (
-        <mesh key={i} geometry={leg.geometry}>
-          <meshBasicMaterial color={leg.color} toneMapped={false} transparent opacity={0.95} />
-        </mesh>
-      ))}
-      <mesh ref={pulse}>
-        <sphereGeometry args={[0.007, 12, 12]} />
+      {alt ? (
+        <group>
+          <mesh geometry={alt.casing} renderOrder={1}>
+            <meshBasicMaterial color="#2a313a" side={THREE.BackSide} />
+          </mesh>
+          <mesh geometry={alt.core} renderOrder={2}>
+            <meshBasicMaterial color="#c5ced8" toneMapped={false} />
+          </mesh>
+        </group>
+      ) : null}
+      <mesh geometry={ribbon.casing} renderOrder={2}>
+        <meshBasicMaterial color="#1a1e24" side={THREE.BackSide} />
+      </mesh>
+      <mesh geometry={ribbon.core} renderOrder={3}>
+        <meshBasicMaterial vertexColors toneMapped={false} />
+      </mesh>
+      <mesh ref={puck} renderOrder={4}>
+        <sphereGeometry args={[0.018, 16, 16]} />
         <meshBasicMaterial color="#f7f4ef" toneMapped={false} />
       </mesh>
+      {[0, 1, 2].map((index) => (
+        <mesh
+          key={index}
+          ref={(node) => {
+            chevrons.current[index] = node;
+          }}
+          renderOrder={4}
+          visible={false}
+        >
+          <coneGeometry args={[0.009, 0.024, 4]} />
+          <meshBasicMaterial color="#f4f7f8" toneMapped={false} />
+        </mesh>
+      ))}
     </group>
   );
 }
@@ -359,17 +527,40 @@ function useGlobeLift(): number {
   return lift;
 }
 
-function Rig() {
+function syncControls(camera: THREE.Camera, controlsNow: OrbitControlsImpl) {
+  const savedPos = camera.position.clone();
+  const savedTarget = controlsNow.target.clone();
+  const damping = controlsNow.dampingFactor;
+  controlsNow.autoRotate = false;
+  controlsNow.dampingFactor = 1;
+  controlsNow.update();
+  camera.position.copy(savedPos);
+  controlsNow.target.copy(savedTarget);
+  controlsNow.dampingFactor = damping;
+}
+
+function placeAim(camera: THREE.Camera, controlsNow: OrbitControlsImpl, aim: Aim) {
+  scratchOffset.setFromSpherical(new THREE.Spherical(aim.radius, aim.phi, aim.theta));
+  camera.position.copy(controlsNow.target).add(scratchOffset);
+  camera.lookAt(controlsNow.target);
+  controlsNow.update();
+}
+
+const EMPTY_PATH: string[] = [];
+
+function Rig({ path }: { path: string[] }) {
   const lift = useGlobeLift();
   const { camera, gl } = useThree();
   const controls = useRef<OrbitControlsImpl | null>(null);
-  const flying = useRef<{ phi: number; theta: number } | null>(null);
+  const flying = useRef<Aim | null>(null);
+  const pending = useRef<Aim | null>(null);
   const dragging = useRef(false);
   const reduce = useRef(false);
   const idleUntil = useRef(0);
   const hold = useRef(false);
   const focusNonce = useMeridian((s) => s.focusNonce);
   const focusId = useMeridian((s) => s.focusId);
+  const pathKey = path.join(">");
 
   useLayoutEffect(() => {
     const controlsNow = new OrbitControlsImpl(camera);
@@ -390,6 +581,8 @@ function Rig() {
     const onStart = () => {
       dragging.current = true;
       flying.current = null;
+      pending.current = null;
+      syncControls(camera, controlsNow);
       controlsNow.dampingFactor = 0.1;
       hold.current = true;
       useMeridian.getState().setHolding(true);
@@ -397,6 +590,11 @@ function Rig() {
     const onEnd = () => {
       dragging.current = false;
       idleUntil.current = performance.now() + 2600;
+      const aim = pending.current;
+      if (!aim) return;
+      pending.current = null;
+      controlsNow.autoRotate = false;
+      flying.current = aim;
     };
     controlsNow.addEventListener("start", onStart);
     controlsNow.addEventListener("end", onEnd);
@@ -419,38 +617,84 @@ function Rig() {
 
   useEffect(() => {
     const controlsNow = controls.current;
-    if (!focusId || !controlsNow) return;
-    const city = cityAt(focusId);
-    const v = latLonToVec(city.lat, city.lon, 1);
-    const phi = Math.acos(Math.max(-1, Math.min(1, v[1])));
-    const theta = Math.atan2(v[0], v[2]);
-    flying.current = { phi, theta };
+    if (!controlsNow || path.length < 2) return;
+    const aim = aimForPath(path, controlsNow.target);
+    if (!aim) return;
+    if (dragging.current) {
+      pending.current = aim;
+      return;
+    }
+    syncControls(camera, controlsNow);
     controlsNow.autoRotate = false;
-    controlsNow.dampingFactor = reduce.current ? 1 : 0.05;
-    controlsNow.setAzimuthalAngle(theta);
-    controlsNow.setPolarAngle(phi);
-    useMeridian.getState().setHolding(true);
+    if (reduce.current) {
+      placeAim(camera, controlsNow, aim);
+      return;
+    }
+    flying.current = aim;
     hold.current = true;
-  }, [focusNonce, focusId]);
+    useMeridian.getState().setHolding(true);
+  }, [pathKey, lift, camera, path.length]);
 
-  useFrame(() => {
+  useEffect(() => {
+    const controlsNow = controls.current;
+    if (!focusId || !controlsNow) return;
+    const aim = aimForPath([focusId], controlsNow.target);
+    if (!aim) return;
+    aim.radius = Math.min(aim.radius, 1.5);
+    if (dragging.current) {
+      pending.current = aim;
+      return;
+    }
+    syncControls(camera, controlsNow);
+    controlsNow.autoRotate = false;
+    if (reduce.current) {
+      placeAim(camera, controlsNow, aim);
+      return;
+    }
+    flying.current = aim;
+    hold.current = true;
+    useMeridian.getState().setHolding(true);
+  }, [focusNonce, focusId, camera]);
+
+  useFrame((_, delta) => {
     const controlsNow = controls.current;
     if (!controlsNow) return;
-    if (flying.current) {
-      const dTheta = Math.abs(angDiff(controlsNow.getAzimuthalAngle(), flying.current.theta));
-      const dPhi = Math.abs(flying.current.phi - controlsNow.getPolarAngle());
-      if (dTheta < 0.02 && dPhi < 0.02) {
+    const aim = flying.current;
+    if (aim && !dragging.current) {
+      const dt = Math.min(delta, 0.05);
+      scratchOffset.copy(camera.position).sub(controlsNow.target);
+      scratchSph.setFromVector3(scratchOffset);
+      const k = 1 - Math.exp(-dt * 2.8);
+      scratchSph.theta += angDiff(scratchSph.theta, aim.theta) * k;
+      scratchSph.phi += (aim.phi - scratchSph.phi) * k;
+      scratchSph.radius += (aim.radius - scratchSph.radius) * k;
+      scratchSph.phi = THREE.MathUtils.clamp(scratchSph.phi, controlsNow.minPolarAngle, controlsNow.maxPolarAngle);
+      scratchSph.radius = THREE.MathUtils.clamp(
+        scratchSph.radius,
+        controlsNow.minDistance,
+        controlsNow.maxDistance,
+      );
+      scratchOffset.setFromSpherical(scratchSph);
+      camera.position.copy(controlsNow.target).add(scratchOffset);
+      camera.lookAt(controlsNow.target);
+      const done =
+        Math.abs(angDiff(scratchSph.theta, aim.theta)) < 0.012 &&
+        Math.abs(scratchSph.phi - aim.phi) < 0.012 &&
+        Math.abs(scratchSph.radius - aim.radius) < 0.02;
+      if (done) {
         flying.current = null;
+        idleUntil.current = performance.now() + 8000;
         controlsNow.dampingFactor = 0.1;
-        idleUntil.current = performance.now() + 2400;
+        controlsNow.update();
       }
-    } else {
-      const allow = !reduce.current && !dragging.current && performance.now() > idleUntil.current;
-      if (controlsNow.autoRotate !== allow) controlsNow.autoRotate = allow;
-      if (hold.current === allow) {
-        hold.current = !allow;
-        useMeridian.getState().setHolding(!allow);
-      }
+      return;
+    }
+    const playing = useMeridian.getState().playing;
+    const allow = !reduce.current && !dragging.current && !playing && performance.now() > idleUntil.current;
+    if (controlsNow.autoRotate !== allow) controlsNow.autoRotate = allow;
+    if (hold.current === allow) {
+      hold.current = !allow;
+      useMeridian.getState().setHolding(!allow);
     }
     controlsNow.update();
   });
@@ -475,9 +719,9 @@ export function Scene({ solution, map }: { solution: RouteSolution | null; map: 
       <Earth map={map} />
       <Atmosphere />
       <TrafficField />
-      {solution ? <RouteArc key={`${solution.path.join(">")}:${solution.hour}`} solution={solution} /> : null}
+      {solution ? <RouteLayer solution={solution} /> : null}
       <Markers solution={solution} />
-      <Rig />
+      <Rig path={solution?.path ?? EMPTY_PATH} />
       <ClockDriver />
     </Canvas>
   );

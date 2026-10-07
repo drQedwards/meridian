@@ -132,6 +132,11 @@ export function Hud({
 
       <p className="mt-3 text-sm text-fg">{names.join(" → ")}</p>
       {roads ? <p className="mt-1 text-xs text-muted">{roads}</p> : null}
+      <p className="mt-1 text-xs text-faint">
+        {solution.systemPath.join(">") === solution.path.join(">")
+          ? "The route draws on the globe, then a marker drives it."
+          : "Bright line is the selfish path. Pale line is the coordinated path."}
+      </p>
       <p className="mt-1 text-xs text-muted">
         {sourceLabel(solution.source)} · score {solution.score.toFixed(2)} · {solution.note}
       </p>
