@@ -73,6 +73,10 @@ const DEMANDS: Demand[] = [
   { from: "pns", to: "tlh", peak: 60, kind: "flat" },
   { from: "mia", to: "eyw", peak: 100, kind: "mid" },
   { from: "eyw", to: "mia", peak: 90, kind: "mid" },
+  { from: "tpa", to: "hsa", peak: 55, kind: "mid" },
+  { from: "hsa", to: "tpa", peak: 50, kind: "mid" },
+  { from: "hsa", to: "crv", peak: 40, kind: "am" },
+  { from: "crv", to: "hsa", peak: 40, kind: "pm" },
   { from: "tpa", to: "crv", peak: 70, kind: "mid" },
   { from: "crv", to: "tpa", peak: 60, kind: "mid" },
 ];

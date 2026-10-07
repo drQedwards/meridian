@@ -57,6 +57,7 @@ export const CITIES: City[] = [
   { id: "ocf", name: "Ocala", region: "Central", lat: 29.19, lon: -82.14, utc: 0, hub: 0.3 },
   { id: "gnv", name: "Gainesville", region: "North Central", lat: 29.65, lon: -82.32, utc: 0, hub: 0.4 },
   { id: "crv", name: "Crystal River", region: "Nature Coast", lat: 28.9, lon: -82.59, utc: 0, hub: 0.18 },
+  { id: "hsa", name: "Homosassa", region: "Nature Coast", lat: 28.78, lon: -82.62, utc: 0, hub: 0.16 },
   { id: "tlh", name: "Tallahassee", region: "Panhandle", lat: 30.44, lon: -84.28, utc: 0, hub: 0.45 },
   { id: "pns", name: "Pensacola", region: "Panhandle", lat: 30.42, lon: -87.22, utc: -1, hub: 0.4 },
   { id: "hom", name: "Homestead", region: "Keys", lat: 25.47, lon: -80.48, utc: 0, hub: 0.25 },
@@ -90,7 +91,8 @@ const ROADS: Road[] = [
   ["gnv", "jax", 112, 105, 1300, "I-75"],
   ["jax", "tlh", 262, 112, 1180, "I-10"],
   ["tlh", "pns", 310, 112, 1080, "I-10"],
-  ["tpa", "crv", 118, 86, 520, "US-19"],
+  ["tpa", "hsa", 102, 86, 520, "US-19"],
+  ["hsa", "crv", 16, 72, 420, "US-19"],
   ["crv", "tlh", 246, 90, 380, "US-19"],
   ["gnv", "tlh", 226, 100, 640, "US-27"],
 ];
