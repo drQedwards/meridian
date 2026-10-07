@@ -1,4 +1,5 @@
 import { Pause, Play } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { CITIES, STATE, cityAt, directedLink } from "@/lib/ppm/network";
 import { placePressure } from "@/lib/ppm/assignment";
 import { congestionLabel } from "@/lib/ppm/solution-engine";
@@ -80,6 +81,31 @@ export function Hud({
   const setArm = useMeridian((s) => s.setArm);
   const scrubHour = useMeridian((s) => s.scrubHour);
   const focus = useMeridian((s) => s.focus);
+  const [sheet, setSheet] = useState<"up" | "down">("up");
+  const wasPlaying = useRef(false);
+  const drag = useRef({ y: 0, moved: false });
+
+  useEffect(() => {
+    if (playing && !wasPlaying.current) setSheet("down");
+    if (!playing && wasPlaying.current) setSheet("up");
+    wasPlaying.current = playing;
+  }, [playing]);
+
+  function onPeekDown(event: React.PointerEvent<HTMLDivElement>) {
+    drag.current = { y: event.clientY, moved: false };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function onPeekMove(event: React.PointerEvent<HTMLDivElement>) {
+    if (Math.abs(event.clientY - drag.current.y) > 8) drag.current.moved = true;
+  }
+
+  function onPeekUp(event: React.PointerEvent<HTMLDivElement>) {
+    const dy = event.clientY - drag.current.y;
+    if (dy > 28) setSheet("down");
+    else if (dy < -28) setSheet("up");
+    else if (!drag.current.moved) setSheet((current) => (current === "down" ? "up" : "down"));
+  }
 
   const maxEta = Math.max(...profile.map((p) => p.totalHours));
   const minEta = Math.min(...profile.map((p) => p.totalHours));
@@ -102,7 +128,33 @@ export function Hud({
           {nextRoad ? <p className="text-sm text-muted">and then {nextRoad}</p> : null}
         </div>
       ) : null}
-      <aside className="panel" aria-label="Corridor">
+      <aside className={`panel ${sheet === "down" ? "is-down" : ""}`} aria-label="Corridor">
+      <div
+        className="sheet-peek"
+        onPointerDown={onPeekDown}
+        onPointerMove={onPeekMove}
+        onPointerUp={onPeekUp}
+      >
+        <span className="sheet-grab" aria-hidden />
+        <div className="sheet-summary">
+          <div>
+            <p className="font-mono text-lg leading-none text-fg tabular-nums">{formatClock(hour)}</p>
+            <p className="mt-1 text-xs text-muted">{formatMin(solution.totalHours)} · {STATE.clock}</p>
+          </div>
+          <button
+            type="button"
+            className="grid h-11 w-11 shrink-0 place-items-center rounded-lg border border-border bg-subtle text-fg"
+            aria-label={playing ? "Pause the day" : "Play through the day"}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              setPlaying(!playing);
+            }}
+          >
+            {playing ? <Pause size={18} strokeWidth={1.75} /> : <Play size={18} strokeWidth={1.75} />}
+          </button>
+        </div>
+      </div>
       <header className="flex items-start justify-between gap-3">
         <div>
           <p className="font-display text-xl leading-none tracking-tight text-fg">Meridian</p>
