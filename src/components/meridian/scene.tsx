@@ -54,7 +54,7 @@ function aimForPath(path: string[], target: THREE.Vector3, places: Record<string
   dir.normalize();
   let maxAng = 0.006;
   for (const p of pts) maxAng = Math.max(maxAng, dir.angleTo(p));
-  const distance = THREE.MathUtils.clamp(1.016 + maxAng * 3.6, 1.03, 2.55);
+  const distance = THREE.MathUtils.clamp(1.62 + maxAng * 2.4, 1.62, 2.55);
   scratchOffset.copy(dir).multiplyScalar(distance).sub(target);
   scratchSph.setFromVector3(scratchOffset);
   return { phi: scratchSph.phi, theta: scratchSph.theta, radius: scratchSph.radius };
@@ -159,7 +159,8 @@ function Earth({ map }: { map: THREE.Texture | null }) {
       <meshLambertMaterial
         map={map ?? undefined}
         emissiveMap={map ?? undefined}
-        emissive={map ? "#93a0ad" : "#000000"}
+        emissive={map ? "#6d7a88" : "#000000"}
+        emissiveIntensity={0.42}
         color={map ? "#ffffff" : "#1a222c"}
       />
     </mesh>
@@ -514,7 +515,7 @@ function Marker({
     const facing = position.dot(camera.position) > 0.12;
     node.visible = facing;
     const height = Math.max(0.02, camera.position.length() - 1);
-    node.scale.setScalar(THREE.MathUtils.clamp(height / 0.38, 0.06, 1.35));
+    node.scale.setScalar(THREE.MathUtils.clamp(height / 0.85, 0.35, 0.7));
   });
 
   return (
@@ -540,7 +541,7 @@ function Marker({
         <sphereGeometry args={[selected ? 0.01 : onPath ? 0.008 : 0.006, 12, 12]} />
         <meshBasicMaterial color={selected ? "#f7f4ef" : "#e7eef5"} toneMapped={false} />
       </mesh>
-      <sprite scale={selected ? 0.07 : onPath ? 0.05 : 0.04} renderOrder={2}>
+      <sprite scale={selected ? 0.034 : onPath ? 0.026 : 0.02} renderOrder={2}>
         <spriteMaterial
           map={glow}
           transparent
@@ -666,7 +667,7 @@ function Rig({ path, places }: { path: string[]; places: Record<string, Spot> })
     controlsNow.enableDamping = true;
     controlsNow.rotateSpeed = 0.62;
     controlsNow.zoomSpeed = 0.7;
-    controlsNow.minDistance = 1.02;
+    controlsNow.minDistance = 1.28;
     controlsNow.maxDistance = 3.4;
     controlsNow.minPolarAngle = 0.12;
     controlsNow.maxPolarAngle = Math.PI - 0.12;
@@ -737,7 +738,6 @@ function Rig({ path, places }: { path: string[]; places: Record<string, Spot> })
     if (!focusId || !controlsNow) return;
     const aim = aimForPath([focusId], controlsNow.target);
     if (!aim) return;
-    aim.radius = Math.min(aim.radius, 1.5);
     if (dragging.current) {
       pending.current = aim;
       return;
@@ -804,7 +804,7 @@ export function Scene({ solution, map }: { solution: RouteSolution | null; map: 
     <Canvas
       className="h-full w-full touch-none"
       dpr={[1, 1.75]}
-      camera={{ position: latLonToVec(28.96, -82.4, 1.12), fov: 42, near: 0.001, far: 80 }}
+      camera={{ position: latLonToVec(28.6, -82.2, 1.78), fov: 42, near: 0.001, far: 80 }}
       gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
       onCreated={({ gl }) => {
         gl.setClearColor(GLOBE);
