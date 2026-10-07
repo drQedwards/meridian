@@ -20,10 +20,10 @@ type MeridianState = {
 };
 
 export const useMeridian = create<MeridianState>((set) => ({
-  hour: 16,
+  hour: 17.25,
   playing: false,
-  originId: "lon",
-  destId: "sin",
+  originId: "mia",
+  destId: "jax",
   focusId: null,
   focusNonce: 0,
   hoverId: null,

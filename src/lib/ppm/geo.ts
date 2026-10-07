@@ -1,14 +1,30 @@
 /** Great-circle helpers and the local rush curve used as corridor traffic. */
 
+/** State clock steps. 96 slices in a day. */
+export const QUARTER_HOURS = 0.25;
+
 export function wrap24(h: number): number {
   const x = h % 24;
   return x < 0 ? x + 24 : x;
 }
 
+/** Index 0..95 of the 15-minute slice containing this hour. */
+export function quarterIndex(hour: number): number {
+  const h = wrap24(hour);
+  let q = Math.round(h / QUARTER_HOURS);
+  if (q >= 96) q = 0;
+  return q;
+}
+
+/** Hour snapped to :00, :15, :30, or :45. */
+export function bucketHour(hour: number): number {
+  return quarterIndex(hour) / 4;
+}
+
 export function formatClock(h: number): string {
   const x = wrap24(h);
   const hh = Math.floor(x);
-  const mm = Math.floor((x - hh) * 60);
+  const mm = Math.floor((x - hh) * 60 + 1e-6);
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
 
@@ -77,7 +93,7 @@ export function arcPoints(a: Vec3, b: Vec3, segments = 40): Vec3[] {
       const p1 = Math.sin(t * omega) / s;
       p = [p0 * au[0] + p1 * bu[0], p0 * au[1] + p1 * bu[1], p0 * au[2] + p1 * bu[2]];
     }
-    const lift = Math.sin(Math.PI * t) * (0.04 + omega * 0.1);
+    const lift = Math.sin(Math.PI * t) * Math.min(0.05, 0.006 + omega * 0.08);
     const r = 1.012 + lift;
     pts.push([p[0] * r, p[1] * r, p[2] * r]);
   }

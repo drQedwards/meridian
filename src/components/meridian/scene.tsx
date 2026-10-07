@@ -29,18 +29,18 @@ function ClockDriver() {
     const dt = Math.min(delta, 0.1);
     if (!useMeridian.getState().playing) return;
     acc.current += dt;
-    if (acc.current < 0.08) return;
-    const step = acc.current;
+    if (acc.current < 0.5) return;
     acc.current = 0;
     const { hour, setHour } = useMeridian.getState();
-    setHour(hour + step * 0.9);
+    setHour(hour + 0.25);
   });
   return null;
 }
 
 function Sun() {
   const hour = useMeridian((s) => s.hour);
-  const pos = latLonToVec(10, (12 - hour) * 15, 8);
+  const utc = (hour + 4 + 24) % 24;
+  const pos = latLonToVec(18, (12 - utc) * 15, 8);
   return <directionalLight position={pos} intensity={1.15} color="#fff4e4" />;
 }
 
@@ -170,7 +170,7 @@ function TrafficField() {
 
   return (
     <lineSegments geometry={geometry}>
-      <lineBasicMaterial vertexColors transparent opacity={0.38} depthWrite={false} />
+      <lineBasicMaterial vertexColors transparent opacity={0.72} depthWrite={false} />
     </lineSegments>
   );
 }
@@ -189,7 +189,7 @@ function RouteArc({ solution }: { solution: RouteSolution }) {
         (p) => new THREE.Vector3(p[0], p[1], p[2]),
       );
       const curve = new THREE.CatmullRomCurve3(pts);
-      const geometry = new THREE.TubeGeometry(curve, 64, 0.0075, 8, false);
+      const geometry = new THREE.TubeGeometry(curve, 48, 0.0045, 6, false);
       return { geometry, color: mixCongestion(leg.congestion), pts };
     });
   }, [solution]);
@@ -229,7 +229,7 @@ function RouteArc({ solution }: { solution: RouteSolution }) {
         </mesh>
       ))}
       <mesh ref={pulse}>
-        <sphereGeometry args={[0.014, 14, 14]} />
+        <sphereGeometry args={[0.007, 12, 12]} />
         <meshBasicMaterial color="#f7f4ef" toneMapped={false} />
       </mesh>
     </group>
@@ -278,10 +278,10 @@ function Marker({
           if (useMeridian.getState().hoverId === city.id) useMeridian.getState().setHover(null);
         }}
       >
-        <sphereGeometry args={[selected ? 0.022 : onPath ? 0.016 : 0.012, 16, 16]} />
+        <sphereGeometry args={[selected ? 0.01 : onPath ? 0.008 : 0.006, 12, 12]} />
         <meshBasicMaterial color={selected ? "#f7f4ef" : "#e7eef5"} toneMapped={false} />
       </mesh>
-      <sprite scale={selected ? 0.22 : onPath ? 0.14 : 0.1} renderOrder={2}>
+      <sprite scale={selected ? 0.07 : onPath ? 0.05 : 0.04} renderOrder={2}>
         <spriteMaterial
           map={glow}
           transparent
@@ -297,7 +297,7 @@ function Marker({
           useMeridian.getState().focus(city.id);
         }}
       >
-        <sphereGeometry args={[0.055, 10, 10]} />
+        <sphereGeometry args={[0.022, 8, 8]} />
         <meshBasicMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
     </group>
@@ -347,11 +347,11 @@ function Markers({ solution }: { solution: RouteSolution | null }) {
 
 function useGlobeLift(): number {
   const [lift, setLift] = useState(() =>
-    typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches ? -0.36 : 0,
+    typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches ? -0.14 : 0,
   );
   useEffect(() => {
     const mq = window.matchMedia("(max-width: 767px)");
-    const apply = () => setLift(mq.matches ? -0.36 : 0);
+    const apply = () => setLift(mq.matches ? -0.14 : 0);
     apply();
     mq.addEventListener("change", apply);
     return () => mq.removeEventListener("change", apply);
@@ -378,13 +378,13 @@ function Rig() {
     controlsNow.enableDamping = true;
     controlsNow.rotateSpeed = 0.62;
     controlsNow.zoomSpeed = 0.7;
-    controlsNow.minDistance = 1.4;
-    controlsNow.maxDistance = 4.8;
+    controlsNow.minDistance = 1.08;
+    controlsNow.maxDistance = 3.4;
     controlsNow.minPolarAngle = 0.12;
     controlsNow.maxPolarAngle = Math.PI - 0.12;
     controlsNow.target.set(0, lift, 0);
     controlsNow.dampingFactor = 0.1;
-    controlsNow.autoRotateSpeed = 0.55;
+    controlsNow.autoRotateSpeed = 0.22;
     reduce.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     controlsNow.autoRotate = !reduce.current;
     const onStart = () => {
@@ -463,7 +463,7 @@ export function Scene({ solution, map }: { solution: RouteSolution | null; map: 
     <Canvas
       className="h-full w-full touch-none"
       dpr={[1, 1.75]}
-      camera={{ position: latLonToVec(18, 42, 2.58), fov: 40, near: 0.1, far: 80 }}
+      camera={{ position: latLonToVec(28.5, -83.4, 1.78), fov: 42, near: 0.01, far: 80 }}
       gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
       onCreated={({ gl }) => {
         gl.setClearColor(GLOBE);

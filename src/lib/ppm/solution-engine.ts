@@ -7,9 +7,9 @@
  *   3. miss → compute, then cache
  * Frequently peeked entries promote into the long-term graph.
  *
- * What gets solved here is the shortest corridor between two cities at a
- * given UTC hour. Edge cost is cruise time inflated by local rush at both
- * ends — so the winning path can change as the day moves.
+ * What gets solved here is the selfish Florida corridor at a 15-minute slice.
+ * Link times come from the equilibrium assignment, so the winning path can
+ * change as commute, visitors, and through trips load different roads.
  *
  * Scoring constants match the PMLL memory graph:
  *   SIMILARITY_THRESHOLD = 0.72
@@ -19,7 +19,8 @@
  *   depthPenalty = 1 / (1 + depth * 0.3)
  */
 
-import { haversineKm, rushFactor, wrap24 } from "./geo";
+import { bucketHour, wrap24 } from "./geo";
+import { countedDemand, probeVehicles, sliceAt } from "./assignment";
 import {
   CITIES,
   cityAt,
@@ -31,12 +32,8 @@ import {
 const SIMILARITY_THRESHOLD = 0.72;
 const DECAY_LAMBDA = 0.05;
 const PROMOTION_THRESHOLD = 3;
-/** Time features must outweigh the two one-hots so a 3h shift falls under 0.72. */
 const TIME_WEIGHT = 6.6;
-const HOUR_BUCKET = 0.5;
-/** A hop may dogleg this far (km) and still count as progress toward the destination. */
-const DETOUR_SLACK_KM = 1600;
-const MAX_HOPS = 4;
+const MAX_HOPS = 8;
 /** A remembered path is kept only if it is still this close to optimal. */
 const STALE_FACTOR = 1.08;
 
@@ -47,8 +44,16 @@ export type RouteLeg = {
   to: string;
   km: number;
   hours: number;
-  /** 0–1 blend of rush at the two ends. */
+  /** 0–1 volume/capacity, worse of the two directions. */
   congestion: number;
+  road: string;
+  /** Vehicles on this directed link this quarter, Q_a. */
+  vehicles: number;
+};
+
+export type FlowShare = {
+  via: string;
+  vehicles: number;
 };
 
 export type RouteSolution = {
@@ -66,6 +71,20 @@ export type RouteSolution = {
   graphNodes: number;
   graphEdges: number;
   note: string;
+  /** Network vehicle-hours, selfish over coordinated. */
+  priceOfAnarchy: number;
+  /** Trips between this pair this quarter, Q_ij. */
+  vehicles: number;
+  /** Vehicles on the shown path, Q_ij^r. */
+  pathVehicles: number;
+  /** True when this pair is in the counted Florida trip table. */
+  counted: boolean;
+  systemPath: string[];
+  systemHours: number;
+  /** Selfish path flows for this pair, largest first. */
+  shares: FlowShare[];
+  /** Coordinated path flows for this pair, largest first. */
+  systemShares: FlowShare[];
 };
 
 type KvEntry = {
@@ -100,12 +119,6 @@ type GraphEdge = {
   createdAt: number;
 };
 
-function bucketHour(hour: number): number {
-  const h = wrap24(hour);
-  const b = Math.round(h / HOUR_BUCKET) * HOUR_BUCKET;
-  return b >= 24 ? 0 : Math.round(b * 10) / 10;
-}
-
 export { bucketHour as hourBucket };
 
 function embed(from: string, to: string, hour: number): number[] {
@@ -137,82 +150,84 @@ function decayWeight(weight: number, createdAt: number, now = Date.now()): numbe
 }
 
 /**
- * Door-to-door hours on one directed hop at a UTC hour.
- * Cruise is fixed; traffic inflates it by rush at departure and arrival,
- * scaled by the corridor's sensitivity and the two hubs.
+ * Directed link at this quarter. `hours` is the selfish equilibrium time.
+ * `congestion` is the worse direction, so a two-way road shows its busy side.
  */
-export function edgeHours(edge: DirectedEdge, utcHour: number): { hours: number; congestion: number } {
-  const a = cityAt(edge.fromId);
-  const b = cityAt(edge.toId);
-  const hA = wrap24(utcHour + a.utc);
-  const hB = wrap24(utcHour + b.utc);
-  const rA = rushFactor(hA);
-  const rB = rushFactor(hB);
-  const congestion = Math.min(1, rA * 0.55 + rB * 0.45);
-  const hubBlend = (a.hub + b.hub) / 2;
-  const hours = edge.airHours * (1 + edge.sensitivity * congestion * hubBlend);
-  return { hours, congestion };
+export function edgeHours(edge: DirectedEdge, hour: number): {
+  hours: number;
+  congestion: number;
+  vehicles: number;
+  road: string;
+} {
+  const slice = sliceAt(hour);
+  const go = slice.directed(edge.fromId, edge.toId);
+  const back = slice.directed(edge.toId, edge.fromId);
+  return {
+    hours: go.hours,
+    congestion: Math.min(1, Math.max(go.vc, back.vc)),
+    vehicles: go.vehicles,
+    road: go.road,
+  };
+}
+
+function legBetween(from: string, to: string, hour: number): RouteLeg | null {
+  const edge = neighbors(from).find((e) => e.toId === to);
+  if (!edge) return null;
+  const timed = edgeHours(edge, hour);
+  return {
+    from,
+    to,
+    km: edge.km,
+    hours: timed.hours,
+    congestion: timed.congestion,
+    road: timed.road || edge.road,
+    vehicles: timed.vehicles,
+  };
 }
 
 type SolvedPath = { path: string[]; legs: RouteLeg[]; totalHours: number; totalKm: number };
 
-function reconstruct(
-  prev: Map<string, { id: string; edge: DirectedEdge } | null>,
-  from: string,
-  to: string,
-  utcHour: number,
-): SolvedPath | null {
-  if (from === to) {
-    return { path: [from], legs: [], totalHours: 0, totalKm: 0 };
-  }
-  const path: string[] = [];
-  let cur: string | null = to;
-  const guard = new Set<string>();
-  while (cur && cur !== from) {
-    if (guard.has(cur)) return null;
-    guard.add(cur);
-    path.push(cur);
-    cur = prev.get(cur)?.id ?? null;
-  }
-  if (cur !== from) return null;
-  path.push(from);
-  path.reverse();
+function timePath(path: string[], hour: number): SolvedPath | null {
+  if (path.length === 0) return null;
   const legs: RouteLeg[] = [];
   let totalHours = 0;
   let totalKm = 0;
   for (let i = 0; i < path.length - 1; i++) {
-    const edge = neighbors(path[i]).find((e) => e.toId === path[i + 1]);
-    if (!edge) return null;
-    const timed = edgeHours(edge, utcHour);
-    legs.push({
-      from: path[i],
-      to: path[i + 1],
-      km: edge.km,
-      hours: timed.hours,
-      congestion: timed.congestion,
-    });
-    totalHours += timed.hours;
-    totalKm += edge.km;
+    const leg = legBetween(path[i], path[i + 1], hour);
+    if (!leg) return null;
+    legs.push(leg);
+    totalHours += leg.hours;
+    totalKm += leg.km;
   }
   return { path, legs, totalHours, totalKm };
 }
 
-/** Time-dependent Dijkstra. Weights are frozen at `utcHour`. */
-export function shortestAt(from: string, to: string, utcHour: number): SolvedPath | null {
+/** Selfish path at this quarter: the path carrying the most of this pair, else the cheapest road. */
+export function shortestAt(from: string, to: string, hour: number): SolvedPath | null {
+  const slice = sliceAt(hour);
+  const dominant = slice.pathsOf(from, to)[0];
+  if (dominant && dominant.path.length > 1) {
+    const timed = timePath(dominant.path, slice.hour);
+    if (timed) return timed;
+  }
+  return dijkstra(from, to, slice.hour);
+}
+
+function dijkstra(
+  from: string,
+  to: string,
+  hour: number,
+  hoursOf: (edge: DirectedEdge) => number = (edge) => edgeHours(edge, hour).hours,
+): SolvedPath | null {
   const dist = new Map<string, number>();
   const hops = new Map<string, number>();
-  const prev = new Map<string, { id: string; edge: DirectedEdge } | null>();
+  const prev = new Map<string, string | null>();
   for (const c of CITIES) {
     dist.set(c.id, Infinity);
     hops.set(c.id, 0);
     prev.set(c.id, null);
   }
   dist.set(from, 0);
-  const dest = cityAt(to);
-  const remain = (id: string) => {
-    const c = cityAt(id);
-    return haversineKm(c.lat, c.lon, dest.lat, dest.lon);
-  };
   const queue: Array<{ id: string; d: number; hops: number }> = [{ id: from, d: 0, hops: 0 }];
   const settled = new Set<string>();
 
@@ -226,44 +241,70 @@ export function shortestAt(from: string, to: string, utcHour: number): SolvedPat
     settled.add(item.id);
     if (item.id === to) break;
     if (item.hops >= MAX_HOPS) continue;
-    const remFrom = remain(item.id);
     for (const edge of neighbors(item.id)) {
       if (settled.has(edge.toId)) continue;
-      if (remain(edge.toId) > remFrom + DETOUR_SLACK_KM) continue;
-      const w = edgeHours(edge, utcHour).hours;
+      const w = hoursOf(edge);
       const nd = item.d + w;
       if (nd < (dist.get(edge.toId) ?? Infinity)) {
         dist.set(edge.toId, nd);
         hops.set(edge.toId, item.hops + 1);
-        prev.set(edge.toId, { id: item.id, edge });
+        prev.set(edge.toId, item.id);
         queue.push({ id: edge.toId, d: nd, hops: item.hops + 1 });
       }
     }
   }
 
-  return reconstruct(prev, from, to, utcHour);
+  if (from === to) return { path: [from], legs: [], totalHours: 0, totalKm: 0 };
+  const path: string[] = [];
+  let cur: string | null = to;
+  const guard = new Set<string>();
+  while (cur && cur !== from) {
+    if (guard.has(cur)) return null;
+    guard.add(cur);
+    path.push(cur);
+    cur = prev.get(cur) ?? null;
+  }
+  if (cur !== from) return null;
+  path.push(from);
+  path.reverse();
+  return timePath(path, hour);
 }
 
-function timePath(path: string[], utcHour: number): SolvedPath | null {
-  if (path.length === 0) return null;
-  const legs: RouteLeg[] = [];
-  let totalHours = 0;
-  let totalKm = 0;
-  for (let i = 0; i < path.length - 1; i++) {
-    const edge = neighbors(path[i]).find((e) => e.toId === path[i + 1]);
-    if (!edge) return null;
-    const timed = edgeHours(edge, utcHour);
-    legs.push({
-      from: path[i],
-      to: path[i + 1],
-      km: edge.km,
-      hours: timed.hours,
-      congestion: timed.congestion,
-    });
-    totalHours += timed.hours;
-    totalKm += edge.km;
+function shareOf(items: Array<{ path: string[]; vehicles: number }>): FlowShare[] {
+  return items.slice(0, 3).map((item) => ({
+    via: cityAt(item.path[1] ?? item.path[0]).name,
+    vehicles: item.vehicles,
+  }));
+}
+
+function trafficOf(from: string, to: string, path: string[], hour: number) {
+  const slice = sliceAt(hour);
+  const countedRaw = countedDemand(from, to, hour);
+  const counted = countedRaw > 0;
+  const flows = slice.pathsOf(from, to);
+  const assigned = flows.reduce((sum, item) => sum + item.vehicles, 0);
+  const onThis = flows.find((item) => item.path.join(">") === path.join(">"));
+  const vehicles = counted ? (assigned > 0 ? assigned : countedRaw) : probeVehicles(from, to, hour);
+  const pathVehicles = onThis ? onThis.vehicles : vehicles;
+  const coordinated = slice.systemPathsOf(from, to)[0];
+  const systemSolved = coordinated
+    ? timePath(coordinated.path, hour)
+    : dijkstra(from, to, hour, (edge) => slice.coordinated(edge.fromId, edge.toId).hours);
+  const systemPath = systemSolved?.path ?? path;
+  let systemHours = 0;
+  for (let i = 0; i < systemPath.length - 1; i++) {
+    systemHours += slice.coordinated(systemPath[i], systemPath[i + 1]).hours;
   }
-  return { path, legs, totalHours, totalKm };
+  return {
+    priceOfAnarchy: slice.priceOfAnarchy,
+    vehicles,
+    pathVehicles,
+    counted,
+    systemPath,
+    systemHours,
+    shares: shareOf(flows),
+    systemShares: shareOf(slice.systemPathsOf(from, to)),
+  };
 }
 
 function relevance(similarity: number, weight: number, createdAt: number, depth: number): number {
@@ -306,7 +347,7 @@ class SolutionEngine {
    */
   resolve(from: string, to: string, hour: number): RouteSolution {
     const b = bucketHour(hour);
-    const key = `route:${from}:${to}:${b.toFixed(1)}`;
+    const key = `route:${from}:${to}:${b.toFixed(2)}`;
     const now = Date.now();
     if (this.lastResult && this.lastResult.key === key && now - this.lastResult.at < 90) {
       return this.lastResult.result;
@@ -333,6 +374,7 @@ class SolutionEngine {
         promoted,
         ...stats(),
         note,
+        ...trafficOf(from, to, solved.path, b),
       };
       this.lastResult = { key, at: now, result };
       return result;
@@ -384,17 +426,18 @@ class SolutionEngine {
 
     this.remember(key, from, to, b, fresh.path, query);
     const stored = this.kv.find((e) => e.key === key)!;
-    const missed = longTerm ? "Remembered path no longer shortest" : "Shortest path for this hour";
+    const missed = longTerm ? "Remembered path no longer the loaded one" : "Selfish path for this quarter";
     return pack("solved", 1, fresh, stored.peeks, stored.promoted, missed);
   }
 
-  /** 24 hourly samples so the ribbon can show when the corridor flips. */
+  /** One sample per 15-minute slice, so the ribbon can show the day flip. */
   profile(from: string, to: string): Array<{ hour: number; totalHours: number; path: string[] }> {
     const out = [];
-    for (let h = 0; h < 24; h++) {
-      const solved = shortestAt(from, to, h);
+    for (let q = 0; q < 96; q++) {
+      const hour = q / 4;
+      const solved = shortestAt(from, to, hour);
       out.push({
-        hour: h,
+        hour,
         totalHours: solved?.totalHours ?? 0,
         path: solved?.path ?? [],
       });
@@ -417,7 +460,7 @@ class SolutionEngine {
       promoted: false,
     };
     this.kv.push(entry);
-    if (this.kv.length > 96) this.kv.shift();
+    if (this.kv.length > 320) this.kv.shift();
     return entry;
   }
 
@@ -488,7 +531,8 @@ export function previewRoute(from: string, to: string, hour: number): RouteSolut
     kvSlots: 0,
     graphNodes: 0,
     graphEdges: 0,
-    note: from === to ? "Same gateway" : "Shortest path for this hour",
+    note: from === to ? "Same place" : "Selfish path for this quarter",
+    ...trafficOf(from, to, solved.path, b),
   };
 }
 
@@ -499,7 +543,7 @@ export const ENGINE = {
 } as const;
 
 export function congestionLabel(value: number): "Clear" | "Building" | "Heavy" {
-  if (value < 0.28) return "Clear";
-  if (value < 0.62) return "Building";
+  if (value < 0.45) return "Clear";
+  if (value < 0.8) return "Building";
   return "Heavy";
 }
