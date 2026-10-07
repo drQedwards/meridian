@@ -1,0 +1,19 @@
+node_modules
+.vercel
+dist
+.output
+.nitro
+screenshots
+artifacts
+*.log
+.DS_Store
+.env
+.env.*
+.node_modules.lock
+
+# Sandbox-only agent instructions and tooling. The app still needs the
+# auth flag in app-env so local `npm run dev` matches the preview.
+.grok/*
+!.grok/app-env.json
+AGENTS.md
+AGENTS.project.md
