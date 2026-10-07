@@ -5,6 +5,7 @@ dist
 .nitro
 screenshots
 artifacts
+attachments
 *.log
 .DS_Store
 .env
