@@ -46,9 +46,9 @@ function aimForPath(path: string[], target: THREE.Vector3): Aim | null {
   }
   if (dir.lengthSq() < 1e-8) return null;
   dir.normalize();
-  let maxAng = 0.045;
+  let maxAng = 0.006;
   for (const p of pts) maxAng = Math.max(maxAng, dir.angleTo(p));
-  const distance = THREE.MathUtils.clamp(1.24 + maxAng * 3.5, 1.24, 2.6);
+  const distance = THREE.MathUtils.clamp(1.016 + maxAng * 3.6, 1.03, 2.55);
   scratchOffset.copy(dir).multiplyScalar(distance).sub(target);
   scratchSph.setFromVector3(scratchOffset);
   return { phi: scratchSph.phi, theta: scratchSph.theta, radius: scratchSph.radius };
@@ -213,6 +213,7 @@ type Ribbon = {
   owner: number[];
   tubular: number;
   radial: number;
+  radius: number;
 };
 
 function setRibbonDraw(geometry: THREE.BufferGeometry, t: number) {
@@ -244,39 +245,84 @@ function traceCities(ids: string[], clearance: number): { pts: THREE.Vector3[]; 
   return { pts, owner };
 }
 
-function makeRibbon(ids: string[], radius: number, clearance: number): Ribbon | null {
+function routeSpan(ids: string[]): number {
+  const dir = new THREE.Vector3();
+  const pts: THREE.Vector3[] = [];
+  for (const id of ids) {
+    const city = cityAt(id);
+    const v = latLonToVec(city.lat, city.lon, 1);
+    const p = new THREE.Vector3(v[0], v[1], v[2]);
+    pts.push(p);
+    dir.add(p);
+  }
+  if (dir.lengthSq() < 1e-8) return 0.02;
+  dir.normalize();
+  let max = 0.004;
+  for (const p of pts) max = Math.max(max, dir.angleTo(p));
+  return max;
+}
+
+function makeRibbon(ids: string[]): Ribbon | null {
   if (ids.length < 2) return null;
+  const span = routeSpan(ids);
+  const radius = THREE.MathUtils.clamp(span * 0.07, 0.0007, 0.009);
+  const clearance = Math.max(0.001, radius * 2.2);
   const traced = traceCities(ids, clearance);
   if (traced.pts.length < 2) return null;
   const tubular = Math.max(1, traced.pts.length - 1);
   const radial = 5;
-  const curve = new THREE.CatmullRomCurve3(traced.pts, false, "catmullrom", 0.25);
+  const curve = new THREE.CatmullRomCurve3(traced.pts, false, "catmullrom", 0);
   const core = new THREE.TubeGeometry(curve, tubular, radius, radial, false);
-  const casing = new THREE.TubeGeometry(curve, tubular, radius * 1.4, radial, false);
-  core.setAttribute("color", new THREE.BufferAttribute(new Float32Array(core.attributes.position.count * 3), 3));
+  const casing = new THREE.TubeGeometry(curve, tubular, radius * 1.35, radial, false);
   core.setDrawRange(0, 0);
   casing.setDrawRange(0, 0);
-  return { core, casing, pts: traced.pts, owner: traced.owner, tubular, radial };
-}
-
-function paintRibbon(ribbon: Ribbon, legs: Array<{ congestion: number }>) {
-  const attr = ribbon.core.getAttribute("color") as THREE.BufferAttribute;
-  const stride = ribbon.radial + 1;
-  const last = Math.max(0, ribbon.owner.length - 1);
-  for (let i = 0; i <= ribbon.tubular; i++) {
-    const src = ribbon.owner[Math.min(last, Math.round((i / ribbon.tubular) * last))] ?? 0;
-    const amount = legs[Math.min(Math.max(legs.length - 1, 0), src)]?.congestion ?? 0;
-    trafficColor(amount, scratchColor);
-    for (let j = 0; j < stride; j++) {
-      attr.setXYZ(i * stride + j, scratchColor.r, scratchColor.g, scratchColor.b);
-    }
-  }
-  attr.needsUpdate = true;
+  return { core, casing, pts: traced.pts, owner: traced.owner, tubular, radial, radius };
 }
 
 function disposeRibbon(ribbon: Ribbon | null) {
   ribbon?.core.dispose();
   ribbon?.casing.dispose();
+}
+
+function minutesLabel(hours: number): string {
+  const minutes = Math.max(1, Math.round(hours * 60));
+  if (minutes < 60) return `${minutes} min`;
+  const h = Math.floor(minutes / 60);
+  const rem = minutes % 60;
+  return rem === 0 ? `${h} hr` : `${h} hr ${rem}`;
+}
+
+function labelTexture(text: string, strong: boolean): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 96;
+  const ctx = canvas.getContext("2d");
+  if (ctx) {
+    ctx.clearRect(0, 0, 256, 96);
+    ctx.fillStyle = strong ? "#3c3170" : "#2c3036";
+    ctx.beginPath();
+    ctx.roundRect(6, 14, 244, 68, 30);
+    ctx.fill();
+    ctx.fillStyle = strong ? "#f4f1ff" : "#d9d6e0";
+    ctx.font = "600 40px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, 128, 48);
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function placeTag(sprite: THREE.Sprite | null, pts: THREE.Vector3[], radius: number, side: number) {
+  if (!sprite || pts.length < 2) return;
+  const mid = pts[Math.min(pts.length - 1, Math.floor(pts.length * 0.42))];
+  scratchTangent.crossVectors(mid, UP);
+  if (scratchTangent.lengthSq() < 1e-8) scratchTangent.set(1, 0, 0);
+  scratchTangent.normalize().multiplyScalar(radius * 7 * side);
+  sprite.position.copy(mid).add(scratchTangent);
+  const s = Math.max(radius * 26, 0.012);
+  sprite.scale.set(s, s * 0.38, 1);
 }
 
 function ride(mesh: THREE.Object3D | null, pts: THREE.Vector3[], t: number, lift: number, pointForward: boolean) {
@@ -299,18 +345,31 @@ function RouteLayer({ solution }: { solution: RouteSolution }) {
   const drive = useRef(0);
   const puck = useRef<THREE.Mesh>(null);
   const chevrons = useRef<Array<THREE.Mesh | null>>([]);
+  const bestTag = useRef<THREE.Sprite>(null);
+  const altTag = useRef<THREE.Sprite>(null);
   const [ribbon, setRibbon] = useState<Ribbon | null>(null);
   const [alt, setAlt] = useState<Ribbon | null>(null);
   const pathKey = solution.path.join(">");
-  const altKey = solution.systemPath.join(">");
-  const showAlt = altKey !== pathKey && solution.systemPath.length > 1;
-  const colorKey = solution.legs.map((leg) => leg.congestion.toFixed(2)).join(",");
+  const altIds = solution.altPath.length > 1 && solution.altPath.join(">") !== pathKey ? solution.altPath : [];
+  const altKey = altIds.join(">");
+  const showAlt = altIds.length > 1;
+  const bestMap = useMemo(() => labelTexture(minutesLabel(solution.totalHours), true), [solution.totalHours]);
+  const altMap = useMemo(
+    () => labelTexture(solution.altHours > 0 ? minutesLabel(solution.altHours) : "", false),
+    [solution.altHours],
+  );
+
+  useEffect(() => {
+    return () => {
+      bestMap.dispose();
+      altMap.dispose();
+    };
+  }, [bestMap, altMap]);
 
   useEffect(() => {
     reduce.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const next = makeRibbon(solution.path, 0.016, 0.024);
-    const altNext = showAlt ? makeRibbon(solution.systemPath, 0.008, 0.006) : null;
-    if (next) paintRibbon(next, solution.legs);
+    const next = makeRibbon(solution.path);
+    const altNext = showAlt ? makeRibbon(altIds) : null;
     build.current = reduce.current ? 1 : 0;
     drive.current = 0;
     if (reduce.current && next) {
@@ -328,10 +387,6 @@ function RouteLayer({ solution }: { solution: RouteSolution }) {
       disposeRibbon(altNext);
     };
   }, [pathKey, altKey, showAlt]);
-
-  useEffect(() => {
-    if (ribbon) paintRibbon(ribbon, solution.legs);
-  }, [ribbon, colorKey, solution.legs]);
 
   useFrame((_, delta) => {
     const dt = Math.min(delta, 0.05);
@@ -352,15 +407,21 @@ function RouteLayer({ solution }: { solution: RouteSolution }) {
     if (!pts) return;
     const flowing = t >= 1 && !reduce.current;
     if (flowing) drive.current = (drive.current + dt * 0.16) % 1;
+    const radius = ribbon?.radius ?? 0.001;
     if (puck.current) {
       puck.current.visible = true;
-      ride(puck.current, pts, flowing ? drive.current : t, 0.01, false);
+      puck.current.scale.setScalar(radius * 2.6);
+      ride(puck.current, pts, flowing ? drive.current : t, radius * 1.1, false);
     }
     chevrons.current.forEach((mesh, index) => {
       if (!mesh) return;
       mesh.visible = flowing;
-      if (flowing) ride(mesh, pts, (drive.current + index * 0.2) % 1, 0.012, true);
+      if (!flowing) return;
+      mesh.scale.setScalar(radius * 2.2);
+      ride(mesh, pts, (drive.current + index * 0.2) % 1, radius * 1.3, true);
     });
+    placeTag(bestTag.current, pts, radius, 1);
+    if (alt) placeTag(altTag.current, alt.pts, alt.radius, -1);
   });
 
   if (!ribbon) return null;
@@ -370,21 +431,27 @@ function RouteLayer({ solution }: { solution: RouteSolution }) {
       {alt ? (
         <group>
           <mesh geometry={alt.casing} renderOrder={1}>
-            <meshBasicMaterial color="#2a313a" side={THREE.BackSide} />
+            <meshBasicMaterial color="#3a3d44" side={THREE.BackSide} />
           </mesh>
           <mesh geometry={alt.core} renderOrder={2}>
-            <meshBasicMaterial color="#c5ced8" toneMapped={false} />
+            <meshBasicMaterial color="#c4c0d2" toneMapped={false} />
           </mesh>
+          <sprite ref={altTag} renderOrder={5}>
+            <spriteMaterial map={altMap} transparent depthWrite={false} toneMapped={false} />
+          </sprite>
         </group>
       ) : null}
       <mesh geometry={ribbon.casing} renderOrder={2}>
-        <meshBasicMaterial color="#1a1e24" side={THREE.BackSide} />
+        <meshBasicMaterial color="#2a2348" side={THREE.BackSide} />
       </mesh>
       <mesh geometry={ribbon.core} renderOrder={3}>
-        <meshBasicMaterial vertexColors toneMapped={false} />
+        <meshBasicMaterial color="#6f5cb8" toneMapped={false} />
       </mesh>
+      <sprite ref={bestTag} renderOrder={6}>
+        <spriteMaterial map={bestMap} transparent depthWrite={false} toneMapped={false} />
+      </sprite>
       <mesh ref={puck} renderOrder={4}>
-        <sphereGeometry args={[0.018, 16, 16]} />
+        <sphereGeometry args={[1, 14, 14]} />
         <meshBasicMaterial color="#f7f4ef" toneMapped={false} />
       </mesh>
       {[0, 1, 2].map((index) => (
@@ -396,8 +463,8 @@ function RouteLayer({ solution }: { solution: RouteSolution }) {
           renderOrder={4}
           visible={false}
         >
-          <coneGeometry args={[0.009, 0.024, 4]} />
-          <meshBasicMaterial color="#f4f7f8" toneMapped={false} />
+          <coneGeometry args={[0.45, 1.15, 4]} />
+          <meshBasicMaterial color="#f4f1ff" toneMapped={false} />
         </mesh>
       ))}
     </group>
@@ -427,6 +494,8 @@ function Marker({
     if (!node) return;
     const facing = position.dot(camera.position) > 0.12;
     node.visible = facing;
+    const height = Math.max(0.02, camera.position.length() - 1);
+    node.scale.setScalar(THREE.MathUtils.clamp(height / 0.38, 0.06, 1.35));
   });
 
   return (
@@ -500,7 +569,7 @@ function Markers({ solution }: { solution: RouteSolution | null }) {
   const onPath = new Set(solution?.path ?? []);
   return (
     <group>
-      {CITIES.map((city) => (
+      {CITIES.filter((city) => city.listed !== false).map((city) => (
         <Marker
           key={city.id}
           city={city}
@@ -569,7 +638,7 @@ function Rig({ path }: { path: string[] }) {
     controlsNow.enableDamping = true;
     controlsNow.rotateSpeed = 0.62;
     controlsNow.zoomSpeed = 0.7;
-    controlsNow.minDistance = 1.08;
+    controlsNow.minDistance = 1.02;
     controlsNow.maxDistance = 3.4;
     controlsNow.minPolarAngle = 0.12;
     controlsNow.maxPolarAngle = Math.PI - 0.12;
@@ -707,7 +776,7 @@ export function Scene({ solution, map }: { solution: RouteSolution | null; map: 
     <Canvas
       className="h-full w-full touch-none"
       dpr={[1, 1.75]}
-      camera={{ position: latLonToVec(28.5, -83.4, 1.78), fov: 42, near: 0.01, far: 80 }}
+      camera={{ position: latLonToVec(28.96, -82.4, 1.12), fov: 42, near: 0.001, far: 80 }}
       gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
       onCreated={({ gl }) => {
         gl.setClearColor(GLOBE);

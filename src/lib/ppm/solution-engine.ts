@@ -25,6 +25,7 @@ import {
   CITIES,
   cityAt,
   cityIndexOf,
+  directedLink,
   neighbors,
   type DirectedEdge,
 } from "./network";
@@ -33,7 +34,7 @@ const SIMILARITY_THRESHOLD = 0.72;
 const DECAY_LAMBDA = 0.05;
 const PROMOTION_THRESHOLD = 3;
 const TIME_WEIGHT = 6.6;
-const MAX_HOPS = 8;
+const MAX_HOPS = 14;
 /** A remembered path is kept only if it is still this close to optimal. */
 const STALE_FACTOR = 1.08;
 
@@ -85,6 +86,9 @@ export type RouteSolution = {
   shares: FlowShare[];
   /** Coordinated path flows for this pair, largest first. */
   systemShares: FlowShare[];
+  /** The other reasonable road, when one exists. */
+  altPath: string[];
+  altHours: number;
 };
 
 type KvEntry = {
@@ -270,6 +274,22 @@ function dijkstra(
   return timePath(path, hour);
 }
 
+/** A second road that may share the driveway but not the long stretch of the first. */
+function otherPath(from: string, to: string, primary: string[], hour: number): { path: string[]; hours: number } {
+  if (from === to || primary.length < 2) return { path: primary, hours: 0 };
+  const costly = new Set<string>();
+  for (let i = 0; i < primary.length - 1; i++) {
+    const edge = directedLink(primary[i], primary[i + 1]);
+    if (edge && edge.km >= 2) costly.add(`${primary[i]}>${primary[i + 1]}`);
+  }
+  const alt = dijkstra(from, to, hour, (edge) => {
+    const hours = edgeHours(edge, hour).hours;
+    return costly.has(`${edge.fromId}>${edge.toId}`) ? hours * 5 : hours;
+  });
+  if (!alt || alt.path.join(">") === primary.join(">")) return { path: primary, hours: 0 };
+  return { path: alt.path, hours: alt.totalHours };
+}
+
 function shareOf(items: Array<{ path: string[]; vehicles: number }>): FlowShare[] {
   return items.slice(0, 3).map((item) => ({
     via: cityAt(item.path[1] ?? item.path[0]).name,
@@ -295,6 +315,7 @@ function trafficOf(from: string, to: string, path: string[], hour: number) {
   for (let i = 0; i < systemPath.length - 1; i++) {
     systemHours += slice.coordinated(systemPath[i], systemPath[i + 1]).hours;
   }
+  const other = otherPath(from, to, path, hour);
   return {
     priceOfAnarchy: slice.priceOfAnarchy,
     vehicles,
@@ -304,6 +325,8 @@ function trafficOf(from: string, to: string, path: string[], hour: number) {
     systemHours,
     shares: shareOf(flows),
     systemShares: shareOf(slice.systemPathsOf(from, to)),
+    altPath: other.path,
+    altHours: other.hours,
   };
 }
 

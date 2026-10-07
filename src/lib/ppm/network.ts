@@ -26,6 +26,8 @@ export type City = {
   utc: number;
   /** Relative draw. Used when a pair is not in the counted trips. */
   hub: number;
+  /** False for bends and block-level corners that should not fill the place list. */
+  listed?: boolean;
 };
 
 export type Corridor = {
@@ -57,7 +59,19 @@ export const CITIES: City[] = [
   { id: "ocf", name: "Ocala", region: "Central", lat: 29.19, lon: -82.14, utc: 0, hub: 0.3 },
   { id: "gnv", name: "Gainesville", region: "North Central", lat: 29.65, lon: -82.32, utc: 0, hub: 0.4 },
   { id: "crv", name: "Crystal River", region: "Nature Coast", lat: 28.9, lon: -82.59, utc: 0, hub: 0.18 },
-  { id: "hsa", name: "Homosassa", region: "Nature Coast", lat: 28.78, lon: -82.62, utc: 0, hub: 0.16 },
+  { id: "hsa", name: "Homosassa", region: "Nature Coast", lat: 28.782, lon: -82.621, utc: 0, hub: 0.16 },
+  { id: "app", name: "W Appomattox Ln", region: "Homosassa", lat: 28.781, lon: -82.618, utc: 0, hub: 0.12 },
+  { id: "col", name: "S Colonial Ave", region: "Homosassa", lat: 28.786, lon: -82.615, utc: 0, hub: 0.04, listed: false },
+  { id: "lec", name: "Lecanto", region: "Nature Coast", lat: 28.851, lon: -82.488, utc: 0, hub: 0.22 },
+  { id: "her", name: "Hernando", region: "Nature Coast", lat: 28.962, lon: -82.378, utc: 0, hub: 0.14 },
+  { id: "moak", name: "Marion Oaks", region: "Ocala", lat: 29.012, lon: -82.228, utc: 0, hub: 0.16 },
+  { id: "q1", name: "CR-484 bend", region: "Ocala", lat: 29.058, lon: -82.206, utc: 0, hub: 0.02, listed: false },
+  { id: "q2", name: "SR-200 bend", region: "Ocala", lat: 29.098, lon: -82.196, utc: 0, hub: 0.02, listed: false },
+  { id: "lbt", name: "Liberty Triangle", region: "Ocala", lat: 29.128, lon: -82.183, utc: 0, hub: 0.12 },
+  { id: "osw", name: "SW 92nd Ln", region: "Ocala", lat: 29.141, lon: -82.19, utc: 0, hub: 0.2 },
+  { id: "inv", name: "Inverness", region: "Nature Coast", lat: 28.836, lon: -82.33, utc: 0, hub: 0.18 },
+  { id: "pan", name: "Lake Panasoffkee", region: "Sumter", lat: 28.786, lon: -82.129, utc: 0, hub: 0.12 },
+  { id: "i75", name: "I-75", region: "Sumter", lat: 28.96, lon: -82.07, utc: 0, hub: 0.02, listed: false },
   { id: "tlh", name: "Tallahassee", region: "Panhandle", lat: 30.44, lon: -84.28, utc: 0, hub: 0.45 },
   { id: "pns", name: "Pensacola", region: "Panhandle", lat: 30.42, lon: -87.22, utc: -1, hub: 0.4 },
   { id: "hom", name: "Homestead", region: "Keys", lat: 25.47, lon: -80.48, utc: 0, hub: 0.25 },
@@ -92,7 +106,21 @@ const ROADS: Road[] = [
   ["jax", "tlh", 262, 112, 1180, "I-10"],
   ["tlh", "pns", 310, 112, 1080, "I-10"],
   ["tpa", "hsa", 102, 86, 520, "US-19"],
-  ["hsa", "crv", 16, 72, 420, "US-19"],
+  ["app", "col", 0.5, 32, 80, "S Colonial Ave"],
+  ["col", "hsa", 1.6, 42, 160, "S Colonial Ave"],
+  ["hsa", "lec", 12, 76, 460, "N Lecanto Hwy"],
+  ["lec", "her", 15, 80, 440, "N Lecanto Hwy"],
+  ["her", "moak", 22, 78, 360, "CR-484"],
+  ["moak", "q1", 6, 70, 300, "CR-484"],
+  ["q1", "q2", 5, 62, 260, "CR-484"],
+  ["q2", "lbt", 5, 68, 280, "SR-200"],
+  ["lbt", "osw", 2.4, 40, 160, "SW 92nd Ln"],
+  ["hsa", "inv", 27, 80, 320, "CR-490"],
+  ["inv", "pan", 21, 88, 380, "SR-44"],
+  ["pan", "i75", 20, 108, 880, "I-75"],
+  ["i75", "osw", 26, 108, 860, "I-75"],
+  ["osw", "ocf", 9, 72, 420, "SR-200"],
+  ["lec", "crv", 11, 78, 420, "US-19"],
   ["crv", "tlh", 246, 90, 380, "US-19"],
   ["gnv", "tlh", 226, 100, 640, "US-27"],
 ];

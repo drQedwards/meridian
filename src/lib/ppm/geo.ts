@@ -93,7 +93,7 @@ export function arcPoints(a: Vec3, b: Vec3, segments = 40): Vec3[] {
       const p1 = Math.sin(t * omega) / s;
       p = [p0 * au[0] + p1 * bu[0], p0 * au[1] + p1 * bu[1], p0 * au[2] + p1 * bu[2]];
     }
-    const lift = Math.sin(Math.PI * t) * Math.min(0.05, 0.006 + omega * 0.08);
+    const lift = Math.sin(Math.PI * t) * Math.min(0.012, 0.0004 + omega * 0.04);
     const r = 1.012 + lift;
     pts.push([p[0] * r, p[1] * r, p[2] * r]);
   }

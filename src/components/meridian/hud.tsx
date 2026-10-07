@@ -1,19 +1,25 @@
 import { Pause, Play } from "lucide-react";
-import { CITIES, STATE, cityAt } from "@/lib/ppm/network";
+import { CITIES, STATE, cityAt, directedLink } from "@/lib/ppm/network";
 import { placePressure } from "@/lib/ppm/assignment";
 import { congestionLabel } from "@/lib/ppm/solution-engine";
 import type { RouteSolution } from "@/lib/ppm/solution-engine";
 import { bucketHour, formatClock, wrap24 } from "@/lib/ppm/geo";
 import { useMeridian } from "@/lib/meridian-store";
 
-const featured = [...CITIES].sort((a, b) => a.name.localeCompare(b.name));
+const featured = [...CITIES].filter((city) => city.listed !== false).sort((a, b) => a.name.localeCompare(b.name));
 
-function formatDuration(hours: number): string {
-  const total = Math.max(0, Math.round(hours * 60));
-  const h = Math.floor(total / 60);
-  const m = total % 60;
-  if (h === 0) return `${m}m`;
-  return `${h}h ${String(m).padStart(2, "0")}m`;
+function formatMin(hours: number): string {
+  const minutes = Math.max(1, Math.round(hours * 60));
+  if (minutes < 60) return `${minutes} min`;
+  const h = Math.floor(minutes / 60);
+  const rem = minutes % 60;
+  return rem === 0 ? `${h} hr` : `${h} hr ${rem}`;
+}
+
+function formatMi(km: number): string {
+  const mi = km * 0.621371;
+  if (mi < 10) return `${mi.toFixed(1)} mi`;
+  return `${Math.round(mi)} mi`;
 }
 
 function formatVeh(n: number): string {
@@ -29,8 +35,18 @@ function splitText(shares: Array<{ via: string; vehicles: number }>): string {
 function roadLine(solution: RouteSolution): string {
   const names: string[] = [];
   for (const leg of solution.legs) {
-    if (!leg.road) continue;
+    if (!leg.road || leg.km < 2) continue;
     if (names[names.length - 1] !== leg.road) names.push(leg.road);
+  }
+  return names.join(" · ");
+}
+
+function roadsAlong(ids: string[]): string {
+  const names: string[] = [];
+  for (let i = 0; i < ids.length - 1; i++) {
+    const edge = directedLink(ids[i], ids[i + 1]);
+    if (!edge || edge.km < 2) continue;
+    if (names[names.length - 1] !== edge.road) names.push(edge.road);
   }
   return names.join(" · ");
 }
@@ -65,12 +81,23 @@ export function Hud({
   const maxEta = Math.max(...profile.map((p) => p.totalHours));
   const minEta = Math.min(...profile.map((p) => p.totalHours));
   const bucket = bucketHour(hour);
-  const names = solution.path.map((id) => cityAt(id).name);
+  const names = solution.path.filter((id) => cityAt(id).listed !== false).map((id) => cityAt(id).name);
   const pct = Math.max(0, Math.round((solution.priceOfAnarchy - 1) * 100));
   const roads = roadLine(solution);
+  const first = solution.legs[0];
+  const nextRoad = first ? solution.legs.slice(1).find((leg) => leg.road !== first.road)?.road : undefined;
+  const altRoads = solution.altHours > 0 ? roadsAlong(solution.altPath) : "";
 
   return (
-    <aside className="panel" aria-label="Corridor">
+    <>
+      {first ? (
+        <div className="nav-banner">
+          <p className="font-mono text-sm tabular-nums text-muted">{formatMi(first.km)}</p>
+          <p className="text-lg leading-tight text-fg">{first.road}</p>
+          {nextRoad ? <p className="text-sm text-muted">and then {nextRoad}</p> : null}
+        </div>
+      ) : null}
+      <aside className="panel" aria-label="Corridor">
       <header className="flex items-start justify-between gap-3">
         <div>
           <p className="font-display text-xl leading-none tracking-tight text-fg">Meridian</p>
@@ -123,20 +150,23 @@ export function Hud({
           <p className="mt-1 text-xs text-muted">{STATE.clock}</p>
         </div>
         <div className="text-right">
-          <p className="font-mono text-lg leading-none text-fg tabular-nums">{formatDuration(solution.totalHours)}</p>
+          <p className="font-mono text-lg leading-none text-fg tabular-nums">{formatMin(solution.totalHours)}</p>
           <p className="mt-1 text-xs text-muted">
-            {Math.max(0, solution.path.length - 1)} hops · {Math.round(solution.totalKm).toLocaleString("en-US")} km
+            {formatMi(solution.totalKm)} · {Math.max(0, names.length - 1)} turns
           </p>
         </div>
       </div>
 
       <p className="mt-3 text-sm text-fg">{names.join(" → ")}</p>
-      {roads ? <p className="mt-1 text-xs text-muted">{roads}</p> : null}
-      <p className="mt-1 text-xs text-faint">
-        {solution.systemPath.join(">") === solution.path.join(">")
-          ? "The route draws on the globe, then a marker drives it."
-          : "Bright line is the selfish path. Pale line is the coordinated path."}
-      </p>
+      {roads ? <p className="mt-1 text-xs text-muted">Via {roads}</p> : null}
+      {solution.altHours > 0 ? (
+        <p className="mt-1 text-xs text-faint">
+          Other route {formatMin(solution.altHours)}
+          {altRoads ? ` via ${altRoads}` : ""}
+        </p>
+      ) : (
+        <p className="mt-1 text-xs text-faint">The route draws on the globe, then a marker drives it.</p>
+      )}
       <p className="mt-1 text-xs text-muted">
         {sourceLabel(solution.source)} · score {solution.score.toFixed(2)} · {solution.note}
       </p>
@@ -224,5 +254,6 @@ export function Hud({
         })}
       </ul>
     </aside>
+    </>
   );
 }

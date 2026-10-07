@@ -79,6 +79,8 @@ const DEMANDS: Demand[] = [
   { from: "crv", to: "hsa", peak: 40, kind: "pm" },
   { from: "tpa", to: "crv", peak: 70, kind: "mid" },
   { from: "crv", to: "tpa", peak: 60, kind: "mid" },
+  { from: "app", to: "osw", peak: 55, kind: "both" },
+  { from: "osw", to: "app", peak: 50, kind: "both" },
 ];
 
 function gauss(hour: number, center: number, sigma: number): number {
