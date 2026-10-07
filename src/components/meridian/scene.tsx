@@ -2,7 +2,7 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls as OrbitControlsImpl } from "three-stdlib";
-import { arcPoints, latLonToVec } from "@/lib/ppm/geo";
+import { arcPoints, latLonToVec, vecToLatLon } from "@/lib/ppm/geo";
 import { CITIES, CORRIDORS, cityAt, type City } from "@/lib/ppm/network";
 import { edgeHours } from "@/lib/ppm/solution-engine";
 import type { RouteSolution } from "@/lib/ppm/solution-engine";
@@ -33,12 +33,18 @@ function trafficColor(amount: number, out: THREE.Color): THREE.Color {
 
 type Aim = { phi: number; theta: number; radius: number };
 
-function aimForPath(path: string[], target: THREE.Vector3): Aim | null {
+type Spot = { lat: number; lon: number };
+
+function at(id: string, places: Record<string, Spot>): Spot {
+  return places[id] ?? cityAt(id);
+}
+
+function aimForPath(path: string[], target: THREE.Vector3, places: Record<string, Spot> = {}): Aim | null {
   if (path.length === 0) return null;
   const dir = new THREE.Vector3();
   const pts: THREE.Vector3[] = [];
   for (const id of path) {
-    const city = cityAt(id);
+    const city = at(id, places);
     const v = latLonToVec(city.lat, city.lon, 1);
     const p = new THREE.Vector3(v[0], v[1], v[2]);
     pts.push(p);
@@ -128,7 +134,7 @@ function Atmosphere() {
     [],
   );
   return (
-    <mesh scale={1.055} material={material}>
+    <mesh scale={1.055} material={material} raycast={() => null}>
       <sphereGeometry args={[1, 64, 48]} />
     </mesh>
   );
@@ -142,7 +148,13 @@ function Earth({ map }: { map: THREE.Texture | null }) {
     map.needsUpdate = true;
   }, [gl, map]);
   return (
-    <mesh>
+    <mesh
+      onClick={(event) => {
+        event.stopPropagation();
+        const spot = vecToLatLon(event.point.x, event.point.y, event.point.z);
+        useMeridian.getState().dropOnMap(spot.lat, spot.lon);
+      }}
+    >
       <sphereGeometry args={[1, 96, 72]} />
       <meshLambertMaterial
         map={map ?? undefined}
@@ -200,7 +212,7 @@ function TrafficField() {
   }, [geometry, hour]);
 
   return (
-    <lineSegments geometry={geometry}>
+    <lineSegments geometry={geometry} raycast={() => null}>
       <lineBasicMaterial vertexColors transparent opacity={0.72} depthWrite={false} />
     </lineSegments>
   );
@@ -225,12 +237,16 @@ function setRibbonDraw(geometry: THREE.BufferGeometry, t: number) {
   }
 }
 
-function traceCities(ids: string[], clearance: number): { pts: THREE.Vector3[]; owner: number[] } {
+function traceCities(
+  ids: string[],
+  clearance: number,
+  places: Record<string, Spot>,
+): { pts: THREE.Vector3[]; owner: number[] } {
   const pts: THREE.Vector3[] = [];
   const owner: number[] = [];
   for (let leg = 0; leg < ids.length - 1; leg++) {
-    const a = cityAt(ids[leg]);
-    const b = cityAt(ids[leg + 1]);
+    const a = at(ids[leg], places);
+    const b = at(ids[leg + 1], places);
     const seg = arcPoints(latLonToVec(a.lat, a.lon), latLonToVec(b.lat, b.lon), 16);
     const start = leg === 0 ? 0 : 1;
     for (let i = start; i < seg.length; i++) {
@@ -245,11 +261,11 @@ function traceCities(ids: string[], clearance: number): { pts: THREE.Vector3[]; 
   return { pts, owner };
 }
 
-function routeSpan(ids: string[]): number {
+function routeSpan(ids: string[], places: Record<string, Spot>): number {
   const dir = new THREE.Vector3();
   const pts: THREE.Vector3[] = [];
   for (const id of ids) {
-    const city = cityAt(id);
+    const city = at(id, places);
     const v = latLonToVec(city.lat, city.lon, 1);
     const p = new THREE.Vector3(v[0], v[1], v[2]);
     pts.push(p);
@@ -262,12 +278,12 @@ function routeSpan(ids: string[]): number {
   return max;
 }
 
-function makeRibbon(ids: string[]): Ribbon | null {
+function makeRibbon(ids: string[], places: Record<string, Spot>): Ribbon | null {
   if (ids.length < 2) return null;
-  const span = routeSpan(ids);
+  const span = routeSpan(ids, places);
   const radius = THREE.MathUtils.clamp(span * 0.07, 0.0007, 0.009);
   const clearance = Math.max(0.001, radius * 2.2);
-  const traced = traceCities(ids, clearance);
+  const traced = traceCities(ids, clearance, places);
   if (traced.pts.length < 2) return null;
   const tubular = Math.max(1, traced.pts.length - 1);
   const radial = 5;
@@ -353,6 +369,9 @@ function RouteLayer({ solution }: { solution: RouteSolution }) {
   const altIds = solution.altPath.length > 1 && solution.altPath.join(">") !== pathKey ? solution.altPath : [];
   const altKey = altIds.join(">");
   const showAlt = altIds.length > 1;
+  const placeKey = Object.entries(solution.places)
+    .map(([id, spot]) => `${id}:${spot.lat.toFixed(3)},${spot.lon.toFixed(3)}`)
+    .join("|");
   const bestMap = useMemo(() => labelTexture(minutesLabel(solution.totalHours), true), [solution.totalHours]);
   const altMap = useMemo(
     () => labelTexture(solution.altHours > 0 ? minutesLabel(solution.altHours) : "", false),
@@ -368,8 +387,8 @@ function RouteLayer({ solution }: { solution: RouteSolution }) {
 
   useEffect(() => {
     reduce.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const next = makeRibbon(solution.path);
-    const altNext = showAlt ? makeRibbon(altIds) : null;
+    const next = makeRibbon(solution.path, solution.places);
+    const altNext = showAlt ? makeRibbon(altIds, solution.places) : null;
     build.current = reduce.current ? 1 : 0;
     drive.current = 0;
     if (reduce.current && next) {
@@ -386,7 +405,7 @@ function RouteLayer({ solution }: { solution: RouteSolution }) {
       disposeRibbon(next);
       disposeRibbon(altNext);
     };
-  }, [pathKey, altKey, showAlt]);
+  }, [pathKey, altKey, showAlt, placeKey]);
 
   useFrame((_, delta) => {
     const dt = Math.min(delta, 0.05);
@@ -427,7 +446,7 @@ function RouteLayer({ solution }: { solution: RouteSolution }) {
   if (!ribbon) return null;
 
   return (
-    <group>
+    <group raycast={() => null}>
       {alt ? (
         <group>
           <mesh geometry={alt.casing} renderOrder={1}>
@@ -503,7 +522,10 @@ function Marker({
       <mesh
         onClick={(event) => {
           event.stopPropagation();
-          useMeridian.getState().focus(city.id);
+          const state = useMeridian.getState();
+          if (state.arm === "origin") state.setOrigin(city.id);
+          else state.setDest(city.id);
+          state.focus(city.id);
         }}
         onPointerOver={(event) => {
           event.stopPropagation();
@@ -531,7 +553,10 @@ function Marker({
       <mesh
         onClick={(event) => {
           event.stopPropagation();
-          useMeridian.getState().focus(city.id);
+          const state = useMeridian.getState();
+          if (state.arm === "origin") state.setOrigin(city.id);
+          else state.setDest(city.id);
+          state.focus(city.id);
         }}
       >
         <sphereGeometry args={[0.022, 8, 8]} />
@@ -617,7 +642,7 @@ function placeAim(camera: THREE.Camera, controlsNow: OrbitControlsImpl, aim: Aim
 
 const EMPTY_PATH: string[] = [];
 
-function Rig({ path }: { path: string[] }) {
+function Rig({ path, places }: { path: string[]; places: Record<string, Spot> }) {
   const lift = useGlobeLift();
   const { camera, gl } = useThree();
   const controls = useRef<OrbitControlsImpl | null>(null);
@@ -630,6 +655,9 @@ function Rig({ path }: { path: string[] }) {
   const focusNonce = useMeridian((s) => s.focusNonce);
   const focusId = useMeridian((s) => s.focusId);
   const pathKey = path.join(">");
+  const placeKey = Object.entries(places)
+    .map(([id, spot]) => `${id}:${spot.lat.toFixed(3)},${spot.lon.toFixed(3)}`)
+    .join("|");
 
   useLayoutEffect(() => {
     const controlsNow = new OrbitControlsImpl(camera);
@@ -687,7 +715,7 @@ function Rig({ path }: { path: string[] }) {
   useEffect(() => {
     const controlsNow = controls.current;
     if (!controlsNow || path.length < 2) return;
-    const aim = aimForPath(path, controlsNow.target);
+    const aim = aimForPath(path, controlsNow.target, places);
     if (!aim) return;
     if (dragging.current) {
       pending.current = aim;
@@ -702,7 +730,7 @@ function Rig({ path }: { path: string[] }) {
     flying.current = aim;
     hold.current = true;
     useMeridian.getState().setHolding(true);
-  }, [pathKey, lift, camera, path.length]);
+  }, [pathKey, placeKey, lift, camera, path.length]);
 
   useEffect(() => {
     const controlsNow = controls.current;
@@ -790,7 +818,7 @@ export function Scene({ solution, map }: { solution: RouteSolution | null; map: 
       <TrafficField />
       {solution ? <RouteLayer solution={solution} /> : null}
       <Markers solution={solution} />
-      <Rig path={solution?.path ?? EMPTY_PATH} />
+      <Rig path={solution?.path ?? EMPTY_PATH} places={solution?.places ?? {}} />
       <ClockDriver />
     </Canvas>
   );

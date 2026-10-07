@@ -70,18 +70,23 @@ export function Hud({
   const playing = useMeridian((s) => s.playing);
   const originId = useMeridian((s) => s.originId);
   const destId = useMeridian((s) => s.destId);
+  const originPoint = useMeridian((s) => s.originPoint);
+  const destPoint = useMeridian((s) => s.destPoint);
+  const arm = useMeridian((s) => s.arm);
   const focusId = useMeridian((s) => s.focusId);
-  const holding = useMeridian((s) => s.holding);
   const setPlaying = useMeridian((s) => s.setPlaying);
   const setOrigin = useMeridian((s) => s.setOrigin);
   const setDest = useMeridian((s) => s.setDest);
+  const setArm = useMeridian((s) => s.setArm);
   const scrubHour = useMeridian((s) => s.scrubHour);
   const focus = useMeridian((s) => s.focus);
 
   const maxEta = Math.max(...profile.map((p) => p.totalHours));
   const minEta = Math.min(...profile.map((p) => p.totalHours));
   const bucket = bucketHour(hour);
-  const names = solution.path.filter((id) => cityAt(id).listed !== false).map((id) => cityAt(id).name);
+  const names = solution.path
+    .map((id) => solution.places[id]?.name ?? (cityAt(id).listed === false ? null : cityAt(id).name))
+    .filter((name): name is string => Boolean(name));
   const pct = Math.max(0, Math.round((solution.priceOfAnarchy - 1) * 100));
   const roads = roadLine(solution);
   const first = solution.legs[0];
@@ -115,16 +120,40 @@ export function Hud({
         </button>
       </header>
 
-      <p className="mt-3 text-xs text-faint">{holding ? "Holding" : "Orbiting"} · drag to turn the globe</p>
+      <p className="mt-3 text-xs text-faint">
+        {arm === "origin" ? "Next tap sets the start." : "Next tap sets the end."} Drag still turns the globe.
+      </p>
+
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          className={`text-btn ${arm === "origin" ? "text-fg" : ""}`}
+          aria-pressed={arm === "origin"}
+          onClick={() => setArm("origin")}
+        >
+          Set start
+        </button>
+        <button
+          type="button"
+          className={`text-btn ${arm === "dest" ? "text-fg" : ""}`}
+          aria-pressed={arm === "dest"}
+          onClick={() => setArm("dest")}
+        >
+          Set end
+        </button>
+      </div>
 
       <div className="mt-4 grid grid-cols-2 gap-2">
         <label className="block">
           <span className="mb-1 block text-xs text-muted">From</span>
           <select
             className="field"
-            value={originId}
+            value={originPoint ? "__pin" : originId}
             onChange={(event) => setOrigin(event.target.value)}
           >
+            {originPoint ? (
+              <option value="__pin">{solution.places["pin:o"]?.name ?? "Map pin"}</option>
+            ) : null}
             {featured.map((city) => (
               <option key={city.id} value={city.id}>
                 {city.name}
@@ -134,7 +163,8 @@ export function Hud({
         </label>
         <label className="block">
           <span className="mb-1 block text-xs text-muted">To</span>
-          <select className="field" value={destId} onChange={(event) => setDest(event.target.value)}>
+          <select className="field" value={destPoint ? "__pin" : destId} onChange={(event) => setDest(event.target.value)}>
+            {destPoint ? <option value="__pin">{solution.places["pin:d"]?.name ?? "Map pin"}</option> : null}
             {featured.map((city) => (
               <option key={city.id} value={city.id}>
                 {city.name}

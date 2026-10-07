@@ -69,6 +69,19 @@ export function latLonToVec(lat: number, lon: number, radius = 1): Vec3 {
   return [x, y, z];
 }
 
+/** Inverse of latLonToVec. */
+export function vecToLatLon(x: number, y: number, z: number): { lat: number; lon: number } {
+  const r = Math.hypot(x, y, z) || 1;
+  const nx = x / r;
+  const ny = y / r;
+  const nz = z / r;
+  const lat = 90 - (Math.acos(Math.max(-1, Math.min(1, ny))) * 180) / Math.PI;
+  let lon = (Math.atan2(nz, -nx) * 180) / Math.PI - 180;
+  if (lon < -180) lon += 360;
+  if (lon > 180) lon -= 360;
+  return { lat, lon };
+}
+
 function dot(a: Vec3, b: Vec3): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }

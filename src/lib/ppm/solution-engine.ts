@@ -89,6 +89,8 @@ export type RouteSolution = {
   /** The other reasonable road, when one exists. */
   altPath: string[];
   altHours: number;
+  /** Pins and other points that are not in the city table. */
+  places: Record<string, { name: string; lat: number; lon: number }>;
 };
 
 type KvEntry = {
@@ -327,6 +329,7 @@ function trafficOf(from: string, to: string, path: string[], hour: number) {
     systemShares: shareOf(slice.systemPathsOf(from, to)),
     altPath: other.path,
     altHours: other.hours,
+    places: {},
   };
 }
 
